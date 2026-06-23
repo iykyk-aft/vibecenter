@@ -1,0 +1,26 @@
+{
+  "name": "vibecenter",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Vibe Center — local desktop dashboard tracking all your Claude Code apps + their GitHub repos, metrics, live sessions, queries, and permission approvals.",
+  "author": "Jameson",
+  "license": "MIT",
+  "keywords": [
+    "claude",
+    "claude-code",
+    "dashboard",
+    "metrics",
+    "desktop-app",
+    "developer-tools"
+  ],
+  "scripts": {
+    "start": "node server/server.js",
+    "dev": "node --watch server/server.js",
+    "app": "node vibecenter/launch.mjs",
+    "setup": "powershell -ExecutionPolicy Bypass -File vibecenter/make-icon.ps1 && powershell -ExecutionPolicy Bypass -File vibecenter/install-shortcut.ps1"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

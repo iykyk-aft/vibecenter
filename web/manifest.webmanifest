@@ -1,0 +1,13 @@
+{
+  "name": "Vibe Center",
+  "short_name": "Vibe Center",
+  "description": "Local dashboard for all your Claude Code apps — metrics, queries, and approvals.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#07080f",
+  "theme_color": "#7c5cff",
+  "icons": [
+    { "src": "/assets/vibe.png", "sizes": "256x256", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

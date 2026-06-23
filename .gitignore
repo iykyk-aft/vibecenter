@@ -1,0 +1,6 @@
+node_modules/
+# all local state: token, custom apps, gateway state, event log, settings
+# backups, and the desktop app-window browser profile
+data/
+*.cc-backup
+*.log

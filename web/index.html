@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>⚡ Vibe Center</title>
+  <meta name="theme-color" content="#7c5cff" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="icon" type="image/png" href="/assets/vibe.png" />
+  <link rel="stylesheet" href="/styles.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>" />
+</head>
+<body>
+  <div id="aurora"></div>
+
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-bolt">⚡</span>
+      <div>
+        <div class="brand-title">Vibe Center</div>
+        <div class="brand-sub">Claude Code ops</div>
+      </div>
+    </div>
+
+    <nav id="nav" class="nav">
+      <button class="nav-item active" data-view="overview"><span class="ni">◎</span> Overview</button>
+      <button class="nav-item" data-view="account"><span class="ni">📊</span> Account</button>
+      <button class="nav-item" data-view="approvals"><span class="ni">⛨</span> Approvals</button>
+      <button class="nav-item" data-view="settings"><span class="ni">⚙</span> Settings</button>
+    </nav>
+
+    <div class="nav-label">Applications</div>
+    <div id="projectNav" class="project-nav"></div>
+
+    <div class="sidebar-footer">
+      <span id="liveDot" class="live-dot"></span>
+      <span id="liveText">connecting…</span>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div id="crumb" class="crumb">Overview</div>
+      <div class="topbar-right">
+        <span id="refreshTick" class="refresh-tick">↻</span>
+        <span id="updatedAt" class="updated-at"></span>
+      </div>
+    </header>
+    <section id="view" class="view"></section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
