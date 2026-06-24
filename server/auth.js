@@ -9,8 +9,11 @@ const AUTH_FILE = path.join(process.cwd(), 'data', 'auth.json');
 const SESSION_TTL = 30 * 86400e3; // 30 days
 
 function read() {
-  try { return JSON.parse(fs.readFileSync(AUTH_FILE, 'utf8')); }
-  catch { return { users: [], sessions: {} }; }
+  try {
+    const d = JSON.parse(fs.readFileSync(AUTH_FILE, 'utf8'));
+    if (!d.invites) d.invites = [];
+    return d;
+  } catch { return { users: [], sessions: {}, invites: [] }; }
 }
 function write(d) {
   fs.mkdirSync(path.dirname(AUTH_FILE), { recursive: true });
@@ -22,17 +25,40 @@ function hashPw(password, salt) {
 
 export function hasUsers() { return read().users.length > 0; }
 
-export function registerUser(email, password) {
+export function registerUser(email, password, invite) {
   email = String(email || '').trim().toLowerCase();
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return { ok: false, error: 'Enter a valid email address.' };
   if (!password || String(password).length < 8) return { ok: false, error: 'Password must be at least 8 characters.' };
   const d = read();
   if (d.users.some((u) => u.email === email)) return { ok: false, error: 'That email is already registered.' };
+
+  // The first account (owner) needs no invite; everyone after does.
+  let inv = null;
+  if (d.users.length > 0) {
+    const code = String(invite || '').trim().toUpperCase();
+    if (!code) return { ok: false, error: 'An invite code is required to sign up.' };
+    inv = d.invites.find((i) => i.code === code && !i.usedBy);
+    if (!inv) return { ok: false, error: 'That invite code is invalid or already used.' };
+  }
+
   const salt = crypto.randomBytes(16).toString('hex');
   const user = { id: 'u-' + crypto.randomBytes(6).toString('hex'), email, salt, hash: hashPw(password, salt), createdAt: Date.now() };
   d.users.push(user);
+  if (inv) { inv.usedBy = user.id; inv.usedAt = Date.now(); }
   write(d);
   return { ok: true, user: { id: user.id, email: user.email } };
+}
+
+// Mint a shareable single-use invite code.
+export function createInvite(byUserId) {
+  const d = read();
+  const code = crypto.randomBytes(5).toString('hex').toUpperCase(); // 10 chars
+  d.invites.push({ code, by: byUserId || null, createdAt: Date.now(), usedBy: null });
+  write(d);
+  return code;
+}
+export function listInvites() {
+  return read().invites.map((i) => ({ code: i.code, used: !!i.usedBy, createdAt: i.createdAt }));
 }
 
 export function verifyLogin(email, password) {

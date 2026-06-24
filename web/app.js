@@ -1230,6 +1230,36 @@ async function createProject() {
   }
 }
 
+async function inviteCard() {
+  const data = await api('/api/auth/invite').catch(() => ({ invites: [] }));
+  const list = el('div', { id: 'inviteList', style: 'margin-top:14px;display:flex;flex-direction:column;gap:8px' });
+  const render = (invites) => {
+    list.innerHTML = '';
+    if (!invites.length) { list.append(el('div', { class: 'q-hint' }, 'No invite codes yet.')); return; }
+    for (const i of invites.slice().reverse()) {
+      list.append(el('div', { class: 'rule' },
+        el('code', { style: i.used ? 'opacity:.5;text-decoration:line-through' : '' }, i.code),
+        el('span', { class: 'muted', style: 'font-size:11px' }, i.used ? 'used' : 'unused')));
+    }
+  };
+  render(data.invites || []);
+  const msg = el('div', { style: 'font-size:12.5px;margin-top:10px;color:var(--good)' });
+  return el('div', { class: 'card fade-in', style: 'max-width:640px;margin-top:18px' },
+    el('div', { class: 'card-title' }, '🎟️ Invite Codes'),
+    el('p', { style: 'color:var(--muted);font-size:13px;margin-bottom:12px;line-height:1.6' },
+      'New people need a valid invite code to sign up. Generate one and share it — each code works once.'),
+    el('button', { class: 'btn', onclick: async () => {
+      const r = await api('/api/auth/invite', { method: 'POST' });
+      if (r && r.ok) {
+        msg.textContent = '✓ New code: ' + r.code + '  (copied)';
+        try { await navigator.clipboard.writeText(r.code); } catch { /* clipboard may be blocked */ }
+        const fresh = await api('/api/auth/invite').catch(() => ({ invites: [] }));
+        render(fresh.invites || []);
+      }
+    } }, '+ Generate invite code'),
+    msg, list);
+}
+
 async function renderSettings() {
   $('#crumb').textContent = 'Settings';
   const v = $('#view');
@@ -1255,6 +1285,8 @@ async function renderSettings() {
       el('div', { style: 'margin:12px 0;padding:12px 14px;background:rgba(0,0,0,.3);border-radius:10px;font-family:monospace;color:var(--neon2)' },
         'node hooks/install.mjs'),
       'This wires a Notification + PreToolUse hook into ~/.claude/settings.json (with a backup). Restart any running sessions afterward.')));
+
+  v.append(await inviteCard());
 
   const gh = await api('/api/gh-status');
   v.append(scaffoldCard(gh));
@@ -1396,9 +1428,13 @@ function renderAuthGate(status, mode) {
   const isRegister = (mode || (status.hasUsers ? 'login' : 'register')) === 'register';
   const email = el('input', { type: 'email', class: 'q-input', placeholder: 'you@example.com', autocomplete: 'username' });
   const pass = el('input', { type: 'password', class: 'q-input', placeholder: isRegister ? 'Choose a password (8+ characters)' : 'Password', autocomplete: isRegister ? 'new-password' : 'current-password' });
+  // Invite required for everyone after the first owner account.
+  const needsInvite = isRegister && status.hasUsers;
+  const invite = el('input', { type: 'text', class: 'q-input', placeholder: 'INVITE CODE', autocomplete: 'off', style: 'text-transform:uppercase' });
   const msg = el('div', { class: 'auth-msg' });
   const btn = el('button', { class: 'btn', style: 'width:100%;margin-top:14px', onclick: submit }, isRegister ? 'Create account' : 'Sign in');
   pass.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+  invite.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
   const toggle = el('div', { class: 'auth-toggle' },
     isRegister ? 'Already have an account? ' : 'New here? ',
     el('a', { class: 'auth-link', onclick: () => renderAuthGate(status, isRegister ? 'login' : 'register') },
@@ -1411,7 +1447,9 @@ function renderAuthGate(status, mode) {
       : 'Sign in to your Vibe Center.'),
     el('div', { class: 'field' },
       el('label', {}, 'Email'), email,
-      el('label', { style: 'margin-top:10px' }, 'Password'), pass),
+      el('label', { style: 'margin-top:10px' }, 'Password'), pass,
+      needsInvite ? el('label', { style: 'margin-top:10px' }, 'Invite code') : null,
+      needsInvite ? invite : null),
     btn, msg, toggle);
   const overlay = el('div', { class: 'auth-overlay', id: 'authGate' }, card);
   document.body.append(overlay);
@@ -1421,7 +1459,7 @@ function renderAuthGate(status, mode) {
     btn.disabled = true; btn.textContent = '…';
     const r = await api('/api/auth/' + (isRegister ? 'register' : 'login'), {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: email.value.trim(), password: pass.value }),
+      body: JSON.stringify({ email: email.value.trim(), password: pass.value, invite: invite.value.trim() }),
     }).catch(() => ({ error: 'network error' }));
     if (!r || !r.ok) { msg.textContent = '✕ ' + ((r && r.error) || 'Failed'); btn.disabled = false; btn.textContent = isRegister ? 'Create account' : 'Sign in'; return; }
     closeAuthGate();

@@ -8,7 +8,7 @@ import { githubFor, repoMetrics } from './github.js';
 import { approvalsSummary, addRule, removeRule } from './approvals.js';
 import { getCustomApps, addApp, removeApp, syntheticProjects } from './apps.js';
 import { ghStatus, projectsRoot, scaffoldProject } from './scaffold.js';
-import { hasUsers, registerUser, verifyLogin, createSession, destroySession, userForToken } from './auth.js';
+import { hasUsers, registerUser, verifyLogin, createSession, destroySession, userForToken, createInvite, listInvites } from './auth.js';
 import { runQuery } from './claude.js';
 import { prettyModel, costFor } from './pricing.js';
 
@@ -294,10 +294,15 @@ async function handleApi(req, res, pathname) {
   }
   if (pathname === '/api/auth/register' && req.method === 'POST') {
     const body = await readBody(req);
-    const r = registerUser(body.email, body.password); // open signups; rejects duplicate emails
+    const r = registerUser(body.email, body.password, body.invite); // first owner free; others need an invite
     if (!r.ok) return sendJson(res, 400, r);
     setSessionCookie(res, createSession(r.user.id));
     return sendJson(res, 200, { ok: true, user: r.user });
+  }
+  // mint / list invite codes (signed-in users only — gated by the block below)
+  if (pathname === '/api/auth/invite') {
+    if (req.method === 'POST') return sendJson(res, 200, { ok: true, code: createInvite((currentUser(req) || {}).id) });
+    return sendJson(res, 200, { invites: listInvites() });
   }
   if (pathname === '/api/auth/login' && req.method === 'POST') {
     const body = await readBody(req);
