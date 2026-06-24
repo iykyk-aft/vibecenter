@@ -962,6 +962,9 @@ async function renderProject(id) {
   // query console
   v.append(queryConsole(p));
 
+  // per-workspace approval mode
+  if (p.cwd) { const gw = await api('/api/gateway'); v.append(approvalModeCard(p, gw)); }
+
   // activity + model
   const modelsArr = Object.entries(p.modelTokens || {}).filter(([, t]) => t > 0).map(([model, tokens]) => ({ label: model.replace('claude-', ''), tokens }));
   v.append(el('div', { class: 'row two' },
@@ -1028,9 +1031,11 @@ function renderPendingNodes(pending) {
     el('div', { class: 'feed-body' },
       el('div', { class: 'fb-top' }, p.project || ''),
       el('div', { class: 'fb-sum' }, p.input || '')),
-    el('div', { style: 'display:flex;gap:8px;flex-shrink:0' },
-      el('button', { class: 'btn', style: 'padding:7px 14px', onclick: () => decide(p.id, 'allow') }, '✓ Approve'),
-      el('button', { class: 'btn ghost', style: 'padding:7px 14px', onclick: () => decide(p.id, 'deny') }, '✕ Deny'))));
+    el('div', { class: 'approve-actions' },
+      el('button', { class: 'btn', style: 'padding:7px 12px', onclick: () => decide(p.id, 'allow') }, '✓ Allow once'),
+      el('button', { class: 'btn ghost', style: 'padding:7px 12px', title: 'Always allow this workspace from now on', onclick: () => alwaysAllow({ project: p.cwd, id: p.id }) }, '✓ Always this app'),
+      el('button', { class: 'btn ghost', style: 'padding:7px 12px', title: 'Always allow every workspace from now on', onclick: () => alwaysAllow({ autoAll: true, id: p.id }) }, '✓✓ Always all'),
+      el('button', { class: 'btn ghost', style: 'padding:7px 12px', onclick: () => decide(p.id, 'deny') }, '✕ Deny'))));
 }
 
 async function decide(id, decision) {
@@ -1039,6 +1044,34 @@ async function decide(id, decision) {
   await api('/api/approval-decide', { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ id, decision, reason }) });
   pollPending();
+}
+
+async function setGateway(patch) {
+  return api('/api/gateway', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) });
+}
+// Turn on always-allow (per workspace or globally) and clear the pending call.
+async function alwaysAllow({ project, autoAll, id }) {
+  if (autoAll) await setGateway({ autoAll: true });
+  else if (project) await setGateway({ project, mode: 'auto' });
+  if (id) await api('/api/approval-decide', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, decision: 'allow' }) });
+  renderApprovals();
+}
+
+function approvalModeCard(p, gw) {
+  if (!p.cwd) return null;
+  const locked = gw.autoAll;
+  const mode = locked ? 'auto' : ((gw.projectMode && gw.projectMode[p.cwd]) || 'manual');
+  const opt = (val, label, desc) => el('button', {
+    class: 'mode-opt' + (mode === val ? ' on' : ''), ...(locked ? { disabled: 'disabled' } : {}),
+    onclick: () => setGateway({ project: p.cwd, mode: val }).then(() => renderProject(p.id)),
+  }, el('div', { class: 'mo-t' }, label), el('div', { class: 'mo-d' }, desc));
+  return el('div', { class: 'card fade-in' },
+    el('div', { class: 'card-title' }, '🛡️ Approvals for this workspace',
+      el('span', { class: 'muted' }, gw.enabled ? '' : 'gateway is OFF')),
+    el('div', { class: 'mode-opts' },
+      opt('manual', 'Manual', 'Ask me on the dashboard each time'),
+      opt('auto', 'Always allow', 'Auto-approve Edit / Write / Bash here')),
+    locked ? el('div', { class: 'q-hint', style: 'margin-top:10px' }, '“Always allow everything” is ON globally — it overrides this. Turn it off on the Approvals screen to set per-workspace.') : null);
 }
 
 async function toggleGateway() {
@@ -1078,7 +1111,13 @@ async function renderApprovals() {
           'When ON, Edit / Write / Bash tool calls across your sessions pause and wait here for you to Approve or Deny — clear VS Code permission prompts straight from the dashboard. No response in ~50s → the normal VS Code prompt appears, so it never wedges a session. Needs the hook installed (',
           el('code', {}, 'node hooks/install.mjs'), ').')),
       el('button', { class: 'btn ' + (g.enabled ? '' : 'ghost'), onclick: toggleGateway },
-        g.enabled ? '● Gateway ON' : '○ Gateway OFF'))));
+        g.enabled ? '● Gateway ON' : '○ Gateway OFF')),
+    g.enabled ? el('div', { class: 'mode-row' },
+      el('div', {},
+        el('div', { style: 'font-weight:600;font-size:13px' }, 'Always allow everything'),
+        el('div', { style: 'font-size:12px;color:var(--muted)' }, 'Auto-approve every Edit/Write/Bash across all workspaces — no prompts.')),
+      el('button', { class: 'btn ' + (g.autoAll ? '' : 'ghost'), style: 'padding:7px 14px', onclick: () => setGateway({ autoAll: !g.autoAll }).then(renderApprovals) },
+        g.autoAll ? '● ON' : '○ OFF')) : null));
 
   // KPIs
   v.append(el('div', { class: 'kpi-grid' },

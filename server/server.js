@@ -80,7 +80,7 @@ let approvalSeq = 1;
 
 function readGateway() {
   const g = readConfig().gateway || {};
-  return { enabled: !!g.enabled, projects: g.projects || {} };
+  return { enabled: !!g.enabled, autoAll: !!g.autoAll, projects: g.projects || {}, projectMode: g.projectMode || {} };
 }
 function writeGateway(g) {
   const cfg = readConfig();
@@ -92,6 +92,12 @@ function gatewayActiveFor(cwd) {
   if (!g.enabled) return false;
   if (cwd && g.projects && g.projects[cwd] === false) return false; // per-app opt-out
   return true;
+}
+// 'manual' = ask on the dashboard; 'auto' = always allow (this app, or all apps).
+function gatewayModeFor(cwd) {
+  const g = readGateway();
+  if (g.autoAll) return 'auto';
+  return (cwd && g.projectMode[cwd]) || 'manual';
 }
 
 // Read ONLY the non-secret plan fields from credentials (never tokens) so the
@@ -460,7 +466,9 @@ async function handleApi(req, res, pathname) {
       const body = await readBody(req);
       const g = readGateway();
       if (typeof body.enabled === 'boolean') g.enabled = body.enabled;
+      if (typeof body.autoAll === 'boolean') g.autoAll = body.autoAll;
       if (body.project && typeof body.projectEnabled === 'boolean') g.projects[body.project] = body.projectEnabled;
+      if (body.project && (body.mode === 'manual' || body.mode === 'auto')) g.projectMode[body.project] = body.mode;
       writeGateway(g);
       return sendJson(res, 200, g);
     }
@@ -471,6 +479,8 @@ async function handleApi(req, res, pathname) {
   if (pathname === '/api/approval-request' && req.method === 'POST') {
     const body = await readBody(req);
     if (!gatewayActiveFor(body.cwd)) return sendJson(res, 200, { active: false });
+    // Always-allow (this workspace or globally) → tell the hook to approve now.
+    if (gatewayModeFor(body.cwd) === 'auto') return sendJson(res, 200, { active: true, decision: 'allow' });
     const id = 'ap-' + (approvalSeq++);
     pending.set(id, {
       id, tool: body.tool || null, input: body.input || null,

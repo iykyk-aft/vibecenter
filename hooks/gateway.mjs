@@ -44,7 +44,11 @@ process.stdin.on('end', async () => {
       body: JSON.stringify({ tool: d.tool_name, input: summarize(d.tool_name, d.tool_input), cwd, project: base(cwd), session: d.session_id }),
     });
   } catch { return passthrough(); } // server down → never block
-  if (!reg || !reg.active || !reg.id) return passthrough();
+  if (!reg || !reg.active) return passthrough();
+  // Workspace set to always-allow → approve immediately, no dashboard round-trip.
+  if (reg.decision === 'allow') return decide('allow', 'Always-allow is on for this workspace');
+  if (reg.decision === 'deny') return decide('deny', 'Blocked by workspace setting');
+  if (!reg.id) return passthrough();
 
   const deadline = Date.now() + TIMEOUT_MS;
   while (Date.now() < deadline) {
