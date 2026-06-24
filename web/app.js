@@ -1855,6 +1855,75 @@ Your data and Claude stay on your computer — Vibe Center just shows your dashb
     share, msg, list);
 }
 
+function renderGuide() {
+  $('#crumb').textContent = 'Guide';
+  const v = $('#view'); v.innerHTML = '';
+  const origin = location.origin;
+  const C = (t) => el('code', { class: 'guide-code' }, t);
+  const section = (icon, title, intro, steps) => el('div', { class: 'card fade-in guide-card' },
+    el('div', { class: 'card-title' }, icon + '  ' + title),
+    intro ? el('p', { class: 'guide-intro' }, ...(Array.isArray(intro) ? intro : [intro])) : null,
+    steps ? el('ol', { class: 'guide-steps' }, ...steps.map((s) => el('li', {}, ...(Array.isArray(s) ? s : [s])))) : null);
+
+  v.append(el('div', { class: 'card fade-in', style: 'margin-bottom:16px' },
+    el('div', { class: 'card-title' }, '❔ How to use Vibe Center'),
+    el('p', { class: 'guide-intro' }, 'Vibe Center runs Claude Code on your own computer and shows it here — reachable from any device. Your code, transcripts, and Claude stay on your machine; this dashboard just talks to it.')));
+
+  v.append(el('div', { class: 'guide-grid' },
+    section('🔌', 'Connect your computer', 'Do this once so the dashboard can see your machine.', [
+      ['Download the app and unzip it. (No Node.js? Get it at ', el('a', { href: 'https://nodejs.org', target: '_blank' }, 'nodejs.org'), '.)'],
+      ['Open a terminal in the unzipped folder and run ', C('npm start'), ' — this starts your agent.'],
+      ['Go to ', el('b', {}, 'Settings → Connect a machine'), ', generate a token, and run the command it shows:'],
+      [C('node broker/connect.mjs <your-token> ' + origin)],
+      'Your dashboard now shows your machine. Leave that terminal running while you use it.',
+    ]),
+
+    section('➕', 'Add an application', 'Track a project so you can run Claude in it.', [
+      ['Click ', el('b', {}, '＋ Add application'), ' in the sidebar (or ', el('b', {}, '+ Add app'), ' on Overview).'],
+      [el('b', {}, 'New project:'), ' type a name → it creates a folder, optional GitHub repo, and opens a writeable session.'],
+      [el('b', {}, 'Add existing:'), ' point it at a local folder and/or a GitHub repo you already have.'],
+      'Apps you’ve already used with Claude Code show up automatically.',
+    ]),
+
+    section('🛠️', 'Workbench — run many sessions', 'Drive several Claude Code sessions at once.', [
+      ['Open ', el('b', {}, 'Workbench → + New'), ', pick an app, and a session opens.'],
+      ['Pick a mode in the header: ', C('🔒 Plan'), ' (read-only) or ', C('✏️ Write'), ' (can edit/run, gated by approvals).'],
+      'Type a prompt. Tool calls show like the CLI — ⏺ Tool(args) with the output below.',
+      'The left rail shows every session’s status (working / needs approval / done) — click one to focus it.',
+      ['Switch layouts (Focus / Split / Grid) at the top of the rail. End a session with ', C('✕'), ' or ', el('b', {}, 'End all'), '.'],
+    ]),
+
+    section('🖥️', 'Fleet — multiple computers', 'See all your machines in one place.', [
+      ['In ', el('b', {}, 'Settings → Connect a machine'), ', click ', el('b', {}, 'Add machine'), ' to get a token for each computer.'],
+      'On each computer, install the app and connect it with its own token (step “Connect your computer”).',
+      ['Open the ', el('b', {}, 'Fleet'), ' tab to see every machine’s apps; switch which machine you’re viewing from there or the Account picker.'],
+    ]),
+
+    section('🛡️', 'Approvals — control what Claude does', 'Decide when Claude can edit files or run commands.', [
+      ['Turn the gateway ', el('b', {}, 'ON'), ' on the ', el('b', {}, 'Approvals'), ' screen (needs the hook installed — Settings shows the one-time command).'],
+      'When a write-mode session wants to Edit / Write / Bash, a prompt pops up anywhere in the app: Allow · Always this app · Always all · Deny.',
+      ['Set a workspace to auto-approve from its project page or the session header (', C('🛡️ Auto-approve'), ' / ', C('Ask each'), ').'],
+    ]),
+
+    section('🎟️', 'Invite people', 'Each person runs it on their own machine and sees only their own data.', [
+      ['Go to ', el('b', {}, 'Settings → Invite Codes'), ' and click ', el('b', {}, 'Generate invite'), '.'],
+      'Send the packet it creates — it has the download link, the code, and the exact setup steps.',
+      'They sign up with the code, install the app, and connect their machine. Their data never leaves their computer.',
+    ]),
+
+    section('📱', 'Install on your phone', 'Use it like a native app.', [
+      ['Open this site’s URL on your phone: ', C(origin)],
+      [el('b', {}, 'iPhone (Safari):'), ' Share → Add to Home Screen.'],
+      [el('b', {}, 'Android (Chrome):'), ' menu → Install app.'],
+      'It launches full-screen — approvals and metrics in your pocket.',
+    ]),
+
+    section('📊', 'Account & metrics', null, [
+      'Account shows lifetime tokens, spend (or API-equivalent value on Max/Pro), cache savings, a usage heatmap, model trends, and budgets you can set in Settings.',
+      'On Max/Pro the dollar figures are what your usage would cost on the metered API — not money charged.',
+    ])));
+}
+
 async function renderSettings() {
   $('#crumb').textContent = 'Settings';
   const v = $('#view');
@@ -2176,6 +2245,7 @@ function navView(view) {
   else if (view === 'account') renderAccount();
   else if (view === 'approvals') renderApprovals();
   else if (view === 'settings') renderSettings();
+  else if (view === 'guide') renderGuide();
 }
 function navProject(id) {
   clearInterval(state.approvalsTimer);

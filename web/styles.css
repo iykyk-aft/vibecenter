@@ -260,6 +260,15 @@ select:focus { border-color: var(--neon); box-shadow: 0 0 0 3px rgba(124,92,255,
 select option { background: #14162a; color: var(--text); }
 ::placeholder { color: var(--dim); opacity: 1; }
 
+/* ---- guide ---- */
+.guide-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; align-items: start; }
+.guide-intro { color: var(--muted); font-size: 13px; line-height: 1.6; margin-bottom: 10px; }
+.guide-steps { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 9px; font-size: 13px; line-height: 1.55; }
+.guide-steps li { padding-left: 4px; }
+.guide-steps li::marker { color: var(--neon); font-weight: 700; }
+.guide-code { font-family: 'Cascadia Code','Consolas',monospace; font-size: 12px; background: rgba(0,0,0,.32); color: var(--neon2); padding: 2px 7px; border-radius: 6px; word-break: break-all; }
+.guide-card a { color: var(--neon2); }
+
 /* ---- mobile / PWA ---- */
 .topbar-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .menu-btn { display: none; background: rgba(255,255,255,.06); border: 1px solid var(--glass-brd); color: var(--text); width: 38px; height: 38px; border-radius: 10px; font-size: 18px; cursor: pointer; flex-shrink: 0; }
