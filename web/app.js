@@ -833,8 +833,9 @@ function openSessionChat(projectId, sessionId, title, opts = {}) {
   }
 }
 
-async function streamContinue(projectId, sessionId, prompt, textEl, status, body, btn, write, onSession) {
+async function streamContinue(projectId, sessionId, prompt, textEl, status, body, btn, write, onSession, onStatus) {
   let acc = '';
+  const st = (s) => { if (onStatus) onStatus(s); };
   const restore = () => { btn.disabled = false; btn.textContent = sessionId ? '▶ Continue' : '▶ Start'; };
   const gated = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Bash']);
   try {
@@ -851,36 +852,50 @@ async function streamContinue(projectId, sessionId, prompt, textEl, status, body
         const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
         if (!line.trim()) continue;
         let ev; try { ev = JSON.parse(line); } catch { continue; }
-        if (ev.type === 'started') { status.textContent = '🤖 thinking…'; if (ev.sessionId && onSession) onSession(ev.sessionId); }
-        else if (ev.type === 'tool') status.textContent = (write && gated.has(ev.tool) ? '⏳ awaiting approval — ' : '🔧 ') + ev.tool;
-        else if (ev.type === 'text') { acc += (acc ? '\n\n' : '') + ev.text; textEl.textContent = acc; }
-        else if (ev.type === 'done') status.textContent = ev.error ? '✕ failed' : `✓ done${ev.cost != null ? ` · API-equiv $${ev.cost.toFixed(4)}` : ''}`;
+        if (ev.type === 'started') { status.textContent = '🤖 thinking…'; st('running'); if (ev.sessionId && onSession) onSession(ev.sessionId); }
+        else if (ev.type === 'tool') { const awaiting = write && gated.has(ev.tool); status.textContent = (awaiting ? '⏳ awaiting approval — ' : '🔧 ') + ev.tool; st(awaiting ? 'awaiting' : 'running'); }
+        else if (ev.type === 'text') { acc += (acc ? '\n\n' : '') + ev.text; textEl.textContent = acc; st('running'); }
+        else if (ev.type === 'done') { status.textContent = ev.error ? '✕ failed' : `✓ done${ev.cost != null ? ` · API-equiv $${ev.cost.toFixed(4)}` : ''}`; st(ev.error ? 'error' : 'done'); }
         body.scrollTop = body.scrollHeight;
       }
     }
-  } catch (e) { status.textContent = '✕ ' + e.message; }
+  } catch (e) { status.textContent = '✕ ' + e.message; st('error'); }
   restore();
 }
 
 // ---- workbench: multiple live sessions side by side ----------------------
-function sessionPane(p, opts = {}) {
-  let curSession = null;
-  let write = !!opts.write;
-  const pane = el('div', { class: 'bench-pane' });
+// Multi-session workbench: a session rail + one focused conversation. Sessions
+// live in state.bench so they keep streaming even when you switch views.
+function ensureBench() {
+  if (!state.bench) state.bench = { sessions: [], activeId: null, seq: 1 };
+  return state.bench;
+}
+const BENCH_STATUS = {
+  idle: { dot: 'idle', label: 'Idle' },
+  running: { dot: 'run', label: 'Working…' },
+  awaiting: { dot: 'await', label: 'Needs approval' },
+  done: { dot: 'done', label: 'Done' },
+  error: { dot: 'err', label: 'Error' },
+};
+
+function buildBenchSession(project, write) {
+  const b = ensureBench();
+  const sess = { id: 'b' + (b.seq++), project, write: !!write, curSession: null, status: 'idle', unread: false };
   const body = el('div', { class: 'chat-body bench-body' }, el('div', { class: 'empty' }, 'New session — send a prompt to begin.'));
   const ta = el('textarea', { class: 'q-input', rows: '2', placeholder: 'Prompt…  (Ctrl/⌘+Enter)' });
-  const btn = el('button', { class: 'btn', onclick: () => send() }, '▶');
-  const toggle = el('button', { class: 'mode-toggle', onclick: () => { write = !write; sync(); } });
-  function sync() { toggle.textContent = write ? '✏️ Write' : '🔒 Plan'; toggle.className = 'mode-toggle' + (write ? ' write' : ''); }
-  sync();
+  const btn = el('button', { class: 'btn', onclick: () => send() }, '▶ Send');
+  const toggle = el('button', { class: 'mode-toggle', onclick: () => { sess.write = !sess.write; syncMode(); } });
+  function syncMode() { toggle.textContent = sess.write ? '✏️ Write' : '🔒 Plan'; toggle.className = 'mode-toggle' + (sess.write ? ' write' : ''); }
+  syncMode();
   ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) send(); });
-  pane.append(
+  const pane = el('div', { class: 'bench-pane' },
     el('div', { class: 'bench-head' },
-      el('span', { class: 'bench-title', title: p.cwd || p.name }, p.name),
-      el('div', { style: 'display:flex;gap:6px;align-items:center' }, toggle,
-        el('button', { class: 'modal-x', style: 'width:26px;height:26px', onclick: () => pane.remove() }, '✕'))),
+      el('span', { class: 'bench-title', title: project.cwd || project.name }, project.name),
+      el('div', { style: 'display:flex;gap:8px;align-items:center' }, toggle,
+        el('button', { class: 'modal-x', style: 'width:28px;height:28px', title: 'Close session', onclick: () => closeBenchSession(sess.id) }, '✕'))),
     body,
     el('div', { class: 'bench-input' }, el('div', { class: 'q-bar' }, ta, btn)));
+  sess.paneEl = pane; sess.bodyEl = body; sess.taEl = ta;
   function send() {
     const prompt = ta.value.trim();
     if (!prompt) return;
@@ -889,40 +904,103 @@ function sessionPane(p, opts = {}) {
     const ans = el('div', { class: 'chat-msg cb-assistant' });
     const textEl = el('div', { class: 'cb-text' });
     const status = el('div', { class: 'cb-status' }, '⏳ launching…');
-    ans.append(textEl, status);
-    body.append(ans);
-    body.scrollTop = body.scrollHeight;
+    ans.append(textEl, status); body.append(ans); body.scrollTop = body.scrollHeight;
     ta.value = ''; btn.disabled = true; btn.textContent = '…';
-    streamContinue(p.id, curSession, prompt, textEl, status, body, btn, write, (sid) => { curSession = sid; });
+    setBenchStatus(sess, 'running');
+    streamContinue(project.id, sess.curSession, prompt, textEl, status, body, btn, sess.write,
+      (sid) => { sess.curSession = sid; }, (st) => setBenchStatus(sess, st));
   }
-  return pane;
+  b.sessions.push(sess);
+  return sess;
 }
-
-function renderWorkbench() {
-  $('#crumb').textContent = 'Workbench';
-  const v = $('#view');
-  v.innerHTML = '';
-  const projects = (state.overview && state.overview.projects) || [];
-  const local = projects.filter((p) => p.cwd);
-  const grid = el('div', { class: 'bench-grid' });
-  const picker = el('select', { class: 'q-input', style: 'height:38px;max-width:280px' },
+function setBenchStatus(sess, status) {
+  sess.status = status;
+  if (state.bench.activeId !== sess.id && (status === 'awaiting' || status === 'done' || status === 'error')) sess.unread = true;
+  refreshRail();
+}
+function closeBenchSession(id) {
+  const b = ensureBench();
+  const i = b.sessions.findIndex((s) => s.id === id);
+  if (i === -1) return;
+  b.sessions.splice(i, 1);
+  if (b.activeId === id) b.activeId = b.sessions.length ? b.sessions[Math.min(i, b.sessions.length - 1)].id : null;
+  renderWorkbench();
+}
+function setActiveBench(id) {
+  const b = ensureBench();
+  b.activeId = id;
+  const sess = b.sessions.find((s) => s.id === id);
+  if (sess) sess.unread = false;
+  renderWorkbenchMain(); refreshRail();
+  if (sess) setTimeout(() => sess.taEl && sess.taEl.focus(), 0);
+}
+function refreshRail() {
+  const b = state.bench; if (!b || !b.railListEl) return;
+  b.railListEl.innerHTML = '';
+  if (!b.sessions.length) { b.railListEl.append(el('div', { class: 'q-hint', style: 'padding:12px' }, 'No sessions yet.')); return; }
+  for (const s of b.sessions) {
+    const meta = BENCH_STATUS[s.status] || BENCH_STATUS.idle;
+    b.railListEl.append(el('div', { class: 'rail-item' + (s.id === b.activeId ? ' active' : '') + (s.unread ? ' unread' : ''), onclick: () => setActiveBench(s.id) },
+      el('span', { class: 'rail-dot ' + meta.dot }),
+      el('div', { class: 'rail-body' },
+        el('div', { class: 'rail-name' }, s.project.name),
+        el('div', { class: 'rail-status' }, (s.write ? '✏️ ' : '🔒 ') + meta.label)),
+      el('button', { class: 'rail-x', title: 'Close', onclick: (e) => { e.stopPropagation(); closeBenchSession(s.id); } }, '✕')));
+  }
+}
+function newSessionForm() {
+  const local = ((state.overview && state.overview.projects) || []).filter((p) => p.cwd);
+  const picker = el('select', { class: 'q-input', style: 'height:38px' },
     el('option', { value: '' }, '— pick an application —'),
     ...local.map((p) => el('option', { value: p.id }, p.name)));
   const writeChk = el('input', { type: 'checkbox', checked: 'checked' });
-  const addBtn = el('button', { class: 'btn', onclick: () => {
+  const open = el('button', { class: 'btn', style: 'width:100%', onclick: () => {
     const p = local.find((x) => x.id === picker.value);
-    if (p) grid.append(sessionPane(p, { write: writeChk.checked }));
+    if (!p) return;
+    const b = ensureBench();
+    const sess = buildBenchSession({ id: p.id, name: p.name, cwd: p.cwd }, writeChk.checked);
+    b.activeId = sess.id;
+    renderWorkbench();
   } }, '+ Open session');
-  v.append(el('div', { class: 'card fade-in', style: 'margin-bottom:16px' },
-    el('div', { class: 'card-title' }, '🛠️ Workbench', el('span', { class: 'muted' }, 'run multiple Claude Code sessions side by side')),
-    el('div', { style: 'display:flex;gap:10px;align-items:center;flex-wrap:wrap' },
-      picker,
-      el('label', { style: 'display:flex;gap:6px;align-items:center;font-size:12.5px' }, writeChk, '✏️ write mode'),
-      addBtn),
-    el('div', { class: 'q-hint', style: 'margin-top:8px' },
-      local.length ? 'Each pane is an independent session. Write-mode edits pause for approval on the Approvals screen. Leaving this view ends running sessions.'
-        : 'No apps with a local folder yet — create one in Settings → New Project.')));
-  v.append(grid);
+  return el('div', { class: 'newform' },
+    picker,
+    el('label', { style: 'display:flex;gap:6px;align-items:center;font-size:12.5px;margin:10px 0' }, writeChk, '✏️ write mode (edits gated by approvals)'),
+    open);
+}
+function benchEmpty() {
+  const local = ((state.overview && state.overview.projects) || []).filter((p) => p.cwd);
+  if (!local.length) return el('div', { class: 'empty' }, el('div', { class: 'big' }, '🛠️'), 'No apps with a local folder yet — create one in Settings → New Project.');
+  return el('div', { class: 'bench-empty' },
+    el('div', { style: 'font-size:40px' }, '🛠️'),
+    el('div', { style: 'font-weight:800;font-size:17px;margin:8px 0 4px' }, 'Workbench'),
+    el('div', { class: 'muted', style: 'margin-bottom:20px;max-width:340px;text-align:center' }, 'Run many Claude Code sessions at once. Each keeps working while you focus another. Pick an app to start.'),
+    el('div', { style: 'width:300px' }, newSessionForm()));
+}
+function renderWorkbenchMain() {
+  const b = state.bench; if (!b || !b.mainEl) return;
+  const sess = b.sessions.find((s) => s.id === b.activeId);
+  if (!sess) { b.mainEl.replaceChildren(benchEmpty()); return; }
+  b.mainEl.replaceChildren(sess.paneEl);
+  setTimeout(() => { sess.bodyEl.scrollTop = sess.bodyEl.scrollHeight; }, 0);
+}
+function renderWorkbench() {
+  $('#crumb').textContent = 'Workbench';
+  const v = $('#view'); v.innerHTML = '';
+  const b = ensureBench();
+  if (!b.activeId && b.sessions.length) b.activeId = b.sessions[0].id;
+  const railList = el('div', { class: 'bench-rail-list' });
+  const newHost = el('div', { class: 'bench-newform' });
+  const toggleNew = () => { newHost.replaceChildren(newHost.childElementCount ? '' : newSessionForm()); };
+  const rail = el('div', { class: 'bench-rail' },
+    el('div', { class: 'bench-rail-head' },
+      el('span', {}, 'Sessions ', el('span', { class: 'muted' }, String(b.sessions.length))),
+      el('button', { class: 'btn ghost', style: 'padding:5px 11px;font-size:12px', onclick: toggleNew }, '+ New')),
+    newHost, railList);
+  const main = el('div', { class: 'bench-main' });
+  v.append(el('div', { class: 'bench-shell' }, rail, main));
+  b.railListEl = railList; b.mainEl = main;
+  refreshRail();
+  renderWorkbenchMain();
 }
 
 async function renderProject(id) {
