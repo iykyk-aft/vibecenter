@@ -338,6 +338,9 @@ input:focus { border-color: var(--neon); box-shadow: 0 0 0 3px rgba(124,92,255,0
 .auth-title { font-size: 20px; font-weight: 800; text-align: center; margin-top: 8px; }
 .auth-sub { font-size: 13px; color: var(--muted); text-align: center; margin: 6px 0 20px; line-height: 1.5; }
 .auth-msg { font-size: 12.5px; color: var(--bad); margin-top: 12px; min-height: 16px; text-align: center; }
+.auth-toggle { font-size: 12.5px; color: var(--muted); text-align: center; margin-top: 16px; }
+.auth-link { color: var(--neon2); cursor: pointer; font-weight: 600; }
+.auth-link:hover { text-decoration: underline; }
 .owner-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 14px; border-top: 1px solid var(--glass-brd); }
 .owner-email { font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .owner-logout { background: rgba(255,255,255,.06); border: 1px solid var(--glass-brd); color: var(--muted); font-size: 11px; padding: 4px 10px; border-radius: 8px; cursor: pointer; flex-shrink: 0; }

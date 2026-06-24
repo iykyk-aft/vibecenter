@@ -293,10 +293,8 @@ async function handleApi(req, res, pathname) {
     return sendJson(res, 200, { hasUsers: hasUsers(), user: currentUser(req) });
   }
   if (pathname === '/api/auth/register' && req.method === 'POST') {
-    // One owner per agent for now; multi-user signup happens at the broker later.
-    if (hasUsers()) return sendJson(res, 403, { error: 'This agent already has an owner. Log in instead.' });
     const body = await readBody(req);
-    const r = registerUser(body.email, body.password);
+    const r = registerUser(body.email, body.password); // open signups; rejects duplicate emails
     if (!r.ok) return sendJson(res, 400, r);
     setSessionCookie(res, createSession(r.user.id));
     return sendJson(res, 200, { ok: true, user: r.user });

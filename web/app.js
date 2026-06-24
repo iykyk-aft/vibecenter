@@ -1390,24 +1390,29 @@ function setOwnerFooter(user) {
     el('span', { class: 'owner-email', title: user.email }, user.email),
     el('button', { class: 'owner-logout', onclick: logout, title: 'Sign out' }, 'Sign out')));
 }
-function renderAuthGate(status) {
+function renderAuthGate(status, mode) {
   closeAuthGate();
-  const isRegister = !status.hasUsers;
+  // First run with no accounts → default to signup; otherwise sign in. Toggleable.
+  const isRegister = (mode || (status.hasUsers ? 'login' : 'register')) === 'register';
   const email = el('input', { type: 'email', class: 'q-input', placeholder: 'you@example.com', autocomplete: 'username' });
   const pass = el('input', { type: 'password', class: 'q-input', placeholder: isRegister ? 'Choose a password (8+ characters)' : 'Password', autocomplete: isRegister ? 'new-password' : 'current-password' });
   const msg = el('div', { class: 'auth-msg' });
   const btn = el('button', { class: 'btn', style: 'width:100%;margin-top:14px', onclick: submit }, isRegister ? 'Create account' : 'Sign in');
   pass.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+  const toggle = el('div', { class: 'auth-toggle' },
+    isRegister ? 'Already have an account? ' : 'New here? ',
+    el('a', { class: 'auth-link', onclick: () => renderAuthGate(status, isRegister ? 'login' : 'register') },
+      isRegister ? 'Sign in' : 'Create an account'));
   const card = el('div', { class: 'auth-card' },
     el('div', { class: 'auth-brand' }, '⚡'),
     el('div', { class: 'auth-title' }, isRegister ? 'Create your account' : 'Welcome back'),
     el('div', { class: 'auth-sub' }, isRegister
-      ? 'Set the owner login for this machine’s Vibe Center.'
+      ? 'Sign up to access your Vibe Center from any device.'
       : 'Sign in to your Vibe Center.'),
     el('div', { class: 'field' },
       el('label', {}, 'Email'), email,
       el('label', { style: 'margin-top:10px' }, 'Password'), pass),
-    btn, msg);
+    btn, msg, toggle);
   const overlay = el('div', { class: 'auth-overlay', id: 'authGate' }, card);
   document.body.append(overlay);
   email.focus();
