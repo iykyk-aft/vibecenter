@@ -877,7 +877,7 @@ function toolCard(ev) {
   };
 }
 
-async function streamContinue(projectId, sessionId, prompt, stream, status, body, btn, write, onSession, onStatus) {
+async function streamContinue(projectId, sessionId, prompt, stream, status, body, btn, write, onSession, onStatus, signal) {
   const st = (s) => { if (onStatus) onStatus(s); };
   const restore = () => { btn.disabled = false; btn.textContent = sessionId ? '▶ Continue' : '▶ Start'; };
   const gated = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Bash']);
@@ -889,7 +889,7 @@ async function streamContinue(projectId, sessionId, prompt, stream, status, body
   };
   try {
     const res = await fetch('/api/query', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ project: projectId, session: sessionId, prompt, write: !!write }) });
+      signal, body: JSON.stringify({ project: projectId, session: sessionId, prompt, write: !!write }) });
     if (!res.ok) { const e = await res.json().catch(() => ({})); status.textContent = '✕ ' + (e.error || res.status); st('error'); restore(); return; }
     const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = '';
     while (true) {
@@ -916,16 +916,64 @@ async function streamContinue(projectId, sessionId, prompt, stream, status, body
         body.scrollTop = body.scrollHeight;
       }
     }
-  } catch (e) { status.textContent = '✕ ' + e.message; st('error'); }
+  } catch (e) {
+    // Aborting the fetch (Stop button / pane close) is a normal user action, not
+    // an error — the server kills the claude child on request-close.
+    if (e.name === 'AbortError') { status.textContent = '⏹ stopped'; st('idle'); }
+    else { status.textContent = '✕ ' + e.message; st('error'); }
+  }
   restore();
 }
 
 // ---- workbench: multiple live sessions side by side ----------------------
 // Multi-session workbench: a session rail + one focused conversation. Sessions
-// live in state.bench so they keep streaming even when you switch views.
+// live in state.bench so they keep streaming even when you switch views, and
+// are persisted to localStorage so they survive a reload / app restart — they
+// only go away when you explicitly close them with ✕.
+const BENCH_KEY = 'cc.bench.v1';
 function ensureBench() {
-  if (!state.bench) state.bench = { sessions: [], activeId: null, seq: 1 };
+  if (!state.bench) {
+    state.bench = { sessions: [], activeId: null, seq: 1 };
+    loadBench();
+  }
   return state.bench;
+}
+function saveBench() {
+  const b = state.bench;
+  if (!b) return;
+  try {
+    localStorage.setItem(BENCH_KEY, JSON.stringify({
+      seq: b.seq,
+      activeId: b.activeId,
+      // Only the durable bits — DOM nodes and the detached live stream can't be
+      // serialized; we rebuild the pane and reload the transcript on restore.
+      sessions: b.sessions.map((s) => ({
+        id: s.id, project: s.project, write: s.write, curSession: s.curSession, status: s.status,
+      })),
+    }));
+  } catch { /* storage unavailable or full — sessions just won't persist */ }
+}
+function loadBench() {
+  let data;
+  try { data = JSON.parse(localStorage.getItem(BENCH_KEY) || 'null'); } catch { data = null; }
+  if (!data || !Array.isArray(data.sessions)) return;
+  const b = state.bench;
+  b.seq = data.seq || 1;
+  b.activeId = data.activeId || null;
+  for (const s of data.sessions) {
+    if (s && s.project) buildBenchSession(s.project, s.write, s);
+  }
+}
+// Reload a restored session's conversation from its transcript so the pane
+// isn't blank when you come back to it.
+async function loadBenchHistory(sess) {
+  try {
+    const r = await api(`/api/session?project=${encodeURIComponent(sess.project.id)}&id=${encodeURIComponent(sess.curSession)}`);
+    if (!r || r.error || !Array.isArray(r.messages) || !r.messages.length) return;
+    sess.bodyEl.innerHTML = '';
+    for (const m of r.messages) sess.bodyEl.append(chatBubble(m));
+    sess.bodyEl.scrollTop = sess.bodyEl.scrollHeight;
+  } catch { /* leave the placeholder */ }
 }
 const BENCH_STATUS = {
   idle: { dot: 'idle', label: 'Idle' },
@@ -935,15 +983,22 @@ const BENCH_STATUS = {
   error: { dot: 'err', label: 'Error' },
 };
 
-function buildBenchSession(project, write) {
+function buildBenchSession(project, write, saved) {
   const b = ensureBench();
-  const sess = { id: 'b' + (b.seq++), project, write: !!write, curSession: null, status: 'idle', unread: false };
-  const body = el('div', { class: 'chat-body bench-body' }, el('div', { class: 'empty' }, 'New session — send a prompt to begin.'));
+  // A restored session that was mid-run when the app closed: the live stream is
+  // gone, so drop it back to idle rather than show a stuck "Working…".
+  let status = saved ? saved.status : 'idle';
+  if (status === 'running' || status === 'awaiting') status = 'idle';
+  const sess = { id: (saved && saved.id) || ('b' + (b.seq++)), project, write: !!write, curSession: (saved && saved.curSession) || null, status, unread: false };
+  const body = el('div', { class: 'chat-body bench-body' }, el('div', { class: 'empty' }, 'New session — send a prompt to begin. ✕ ends it.'));
   const ta = el('textarea', { class: 'q-input', rows: '2', placeholder: 'Prompt…  (Ctrl/⌘+Enter)' });
   const btn = el('button', { class: 'btn', onclick: () => send() }, '▶ Send');
-  const toggle = el('button', { class: 'mode-toggle', onclick: () => { sess.write = !sess.write; syncMode(); } });
+  const stopBtn = el('button', { class: 'btn stop', style: 'display:none', title: 'Stop this prompt', onclick: () => stop() }, '⏹ Stop');
+  const toggle = el('button', { class: 'mode-toggle', onclick: () => { sess.write = !sess.write; syncMode(); saveBench(); } });
   function syncMode() { toggle.textContent = sess.write ? '✏️ Write' : '🔒 Plan'; toggle.className = 'mode-toggle' + (sess.write ? ' write' : ''); }
   syncMode();
+  // Show Stop only while a prompt is in flight; let the rail/status reflect it too.
+  sess.syncStop = () => { const running = sess.status === 'running' || sess.status === 'awaiting'; stopBtn.style.display = running ? '' : 'none'; };
   ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) send(); });
   const pane = el('div', { class: 'bench-pane' },
     el('div', { class: 'bench-head' },
@@ -951,8 +1006,9 @@ function buildBenchSession(project, write) {
       el('div', { style: 'display:flex;gap:8px;align-items:center' }, toggle,
         el('button', { class: 'modal-x', style: 'width:28px;height:28px', title: 'Close session', onclick: () => closeBenchSession(sess.id) }, '✕'))),
     body,
-    el('div', { class: 'bench-input' }, el('div', { class: 'q-bar' }, ta, btn)));
+    el('div', { class: 'bench-input' }, el('div', { class: 'q-bar' }, ta, stopBtn, btn)));
   sess.paneEl = pane; sess.bodyEl = body; sess.taEl = ta;
+  function stop() { if (sess.abort) { try { sess.abort.abort(); } catch { /* */ } } }
   function send() {
     const prompt = ta.value.trim();
     if (!prompt) return;
@@ -963,24 +1019,34 @@ function buildBenchSession(project, write) {
     const status = el('div', { class: 'cb-status' }, '⏳ launching…');
     ans.append(streamEl, status); body.append(ans); body.scrollTop = body.scrollHeight;
     ta.value = ''; btn.disabled = true; btn.textContent = '…';
+    sess.abort = new AbortController();
     setBenchStatus(sess, 'running');
     streamContinue(project.id, sess.curSession, prompt, streamEl, status, body, btn, sess.write,
-      (sid) => { sess.curSession = sid; }, (st) => setBenchStatus(sess, st));
+      (sid) => { sess.curSession = sid; saveBench(); }, (st) => setBenchStatus(sess, st), sess.abort.signal);
   }
   b.sessions.push(sess);
+  if (saved && sess.curSession) loadBenchHistory(sess);
+  saveBench();
   return sess;
 }
 function setBenchStatus(sess, status) {
+  const changed = sess.status !== status;
   sess.status = status;
   if (state.bench.activeId !== sess.id && (status === 'awaiting' || status === 'done' || status === 'error')) sess.unread = true;
+  if (sess.syncStop) sess.syncStop();
   refreshRail();
+  if (changed) saveBench(); // dedupe the running→running stream spam
 }
 function closeBenchSession(id) {
   const b = ensureBench();
   const i = b.sessions.findIndex((s) => s.id === id);
   if (i === -1) return;
+  // Stop an in-flight prompt so closing the pane doesn't leave claude running.
+  const sess = b.sessions[i];
+  if (sess && sess.abort) { try { sess.abort.abort(); } catch { /* */ } }
   b.sessions.splice(i, 1);
   if (b.activeId === id) b.activeId = b.sessions.length ? b.sessions[Math.min(i, b.sessions.length - 1)].id : null;
+  saveBench();
   renderWorkbench();
 }
 function setActiveBench(id) {
@@ -988,6 +1054,7 @@ function setActiveBench(id) {
   b.activeId = id;
   const sess = b.sessions.find((s) => s.id === id);
   if (sess) sess.unread = false;
+  saveBench();
   renderWorkbenchMain(); refreshRail();
   if (sess) setTimeout(() => sess.taEl && sess.taEl.focus(), 0);
 }
@@ -1005,22 +1072,57 @@ function refreshRail() {
       el('button', { class: 'rail-x', title: 'Close', onclick: (e) => { e.stopPropagation(); closeBenchSession(s.id); } }, '✕')));
   }
 }
+// Per-app session lists for the workbench picker (full list lives on
+// /api/project/:id, not the slim /api/overview). Cached so re-opening the form
+// doesn't refetch.
+const benchSessionCache = {};
 function newSessionForm() {
   const local = ((state.overview && state.overview.projects) || []).filter((p) => p.cwd);
   const picker = el('select', { class: 'q-input', style: 'height:38px' },
     el('option', { value: '' }, '— pick an application —'),
     ...local.map((p) => el('option', { value: p.id }, p.name)));
+  const sessPicker = el('select', { class: 'q-input', style: 'height:38px;margin-top:10px;display:none' });
   const writeChk = el('input', { type: 'checkbox', checked: 'checked' });
+
+  function fillSessions(list) {
+    sessPicker.innerHTML = '';
+    sessPicker.append(el('option', { value: '' }, '✨ New session'));
+    for (const s of (list || [])) {
+      const label = (s.active ? '🟢 ' : '') + (s.title || '(untitled)').slice(0, 48) + ' · ' + ago(s.mtime);
+      sessPicker.append(el('option', { value: s.id }, label));
+    }
+    sessPicker.style.display = '';
+  }
+  async function loadSessions(id) {
+    sessPicker.style.display = 'none';
+    if (!id) return;
+    if (benchSessionCache[id]) { fillSessions(benchSessionCache[id]); return; }
+    sessPicker.innerHTML = ''; sessPicker.append(el('option', {}, 'loading sessions…')); sessPicker.style.display = '';
+    try {
+      const p = await api('/api/project/' + encodeURIComponent(id));
+      const list = (p && Array.isArray(p.sessions)) ? p.sessions : [];
+      benchSessionCache[id] = list;
+      if (picker.value === id) fillSessions(list); // ignore if user switched apps meanwhile
+    } catch { fillSessions([]); }
+  }
+  picker.addEventListener('change', () => loadSessions(picker.value));
+
   const open = el('button', { class: 'btn', style: 'width:100%', onclick: () => {
     const p = local.find((x) => x.id === picker.value);
     if (!p) return;
     const b = ensureBench();
-    const sess = buildBenchSession({ id: p.id, name: p.name, cwd: p.cwd }, writeChk.checked);
+    const project = { id: p.id, name: p.name, cwd: p.cwd };
+    const sid = sessPicker.value;
+    const sess = sid
+      ? buildBenchSession(project, writeChk.checked, { curSession: sid, status: 'idle' })
+      : buildBenchSession(project, writeChk.checked);
     b.activeId = sess.id;
+    saveBench();
     renderWorkbench();
   } }, '+ Open session');
   return el('div', { class: 'newform' },
     picker,
+    sessPicker,
     el('label', { style: 'display:flex;gap:6px;align-items:center;font-size:12.5px;margin:10px 0' }, writeChk, '✏️ write mode (edits gated by approvals)'),
     open);
 }
@@ -1571,6 +1673,175 @@ async function saveToken() {
   renderSettings();
 }
 
+// ---- fleet: every computer + its apps, grouped by GitHub repo --------------
+const OS_ICON = { darwin: '', win32: '⊞', linux: '🐧' };
+const OS_NAME = { darwin: 'macOS', win32: 'Windows', linux: 'Linux' };
+
+// Like api(), but pinned to a specific machine (or the local agent when null) —
+// the fleet view queries every machine, not just the active one.
+async function apiFor(path, agentId, opts) {
+  opts = opts || {};
+  if (agentId) opts.headers = { ...(opts.headers || {}), 'X-CC-Machine': agentId };
+  const res = await fetch(path, opts);
+  if (res.status === 401 && !path.startsWith('/api/auth/')) { lockApp(); throw new Error('unauthorized'); }
+  return res.json();
+}
+
+async function renderFleet() {
+  $('#crumb').textContent = 'Fleet';
+  const v = $('#view');
+  v.innerHTML = '<div class="empty"><div class="big">🖥️</div>Scanning your computers…</div>';
+  await loadMachines(); // refresh connectivity before we fan out
+  const machines = (state.machines && state.machines.length)
+    ? state.machines
+    : [{ agentId: null, name: 'This machine', connected: true }];
+
+  const results = await Promise.all(machines.map(async (m) => {
+    if (!m.connected) return { machine: m, os: null, apps: [], offline: true };
+    try { const r = await apiFor('/api/fleet-apps', m.agentId); return { machine: m, os: r.os, host: r.host, apps: r.apps || [] }; }
+    catch { return { machine: m, os: null, apps: [], error: true }; }
+  }));
+  if (state.view !== 'fleet') return; // navigated away mid-load
+  v.innerHTML = '';
+
+  // connected-computers strip
+  const strip = el('div', { class: 'fleet-machines' });
+  for (const r of results) {
+    strip.append(el('div', { class: 'fleet-machine' + (r.machine.connected ? '' : ' off') },
+      el('span', { class: 'chip-dot' + (r.machine.connected ? '' : ' off') }),
+      el('span', { class: 'fm-os' }, OS_ICON[r.os] || '🖥️'),
+      el('div', { class: 'fm-body' },
+        el('div', { class: 'fm-name' }, r.machine.name),
+        el('div', { class: 'fm-sub' }, r.offline ? 'offline'
+          : r.error ? 'unreachable'
+          : `${OS_NAME[r.os] || '—'} · ${r.apps.length} app${r.apps.length === 1 ? '' : 's'}`))));
+  }
+  const online = results.filter((r) => r.machine.connected).length;
+  v.append(el('div', { class: 'card fade-in' },
+    el('div', { class: 'card-title' }, 'Connected computers', el('span', { class: 'muted' }, `${online} online`)),
+    strip));
+
+  // group apps across machines by GitHub repo (fallback: by name)
+  const groups = new Map();
+  for (const r of results) {
+    for (const app of r.apps) {
+      const key = app.github ? 'gh:' + app.github.toLowerCase() : 'name:' + (app.name || app.id).toLowerCase();
+      if (!groups.has(key)) groups.set(key, { key, github: app.github, name: app.name, stack: app.stack, stackLabel: app.stackLabel, ios: false, android: false, instances: [] });
+      const g = groups.get(key);
+      g.instances.push({ machine: r.machine, os: r.os, app });
+      g.ios = g.ios || app.ios; g.android = g.android || app.android;
+      if (!g.github && app.github) g.github = app.github;
+      if (!g.stackLabel && app.stackLabel) { g.stack = app.stack; g.stackLabel = app.stackLabel; }
+    }
+  }
+  // shared-across-computers first, then by name
+  const list = [...groups.values()].sort((a, b) => {
+    const sa = new Set(a.instances.map((i) => i.machine.agentId)).size;
+    const sb = new Set(b.instances.map((i) => i.machine.agentId)).size;
+    return (sb - sa) || a.name.localeCompare(b.name);
+  });
+
+  v.append(el('div', { class: 'nav-label', style: 'margin:20px 0 8px' }, 'Applications'));
+  const wrap = el('div', { class: 'fleet-apps' });
+  for (const g of list) wrap.append(fleetAppCard(g));
+  v.append(wrap.childElementCount ? wrap
+    : el('div', { class: 'empty' }, 'No applications found on your connected computers.'));
+}
+
+function fleetAppCard(g) {
+  const shared = new Set(g.instances.map((i) => i.machine.agentId)).size > 1;
+  const card = el('div', { class: 'card fade-in fleet-app' + (shared ? ' shared' : '') });
+
+  const badges = el('div', { class: 'fa-badges' });
+  if (shared) badges.append(el('span', { class: 'chip', style: 'color:var(--neon2)' }, '⇄ shared'));
+  if (g.stackLabel) badges.append(el('span', { class: 'chip' }, g.stackLabel));
+  if (g.ios) badges.append(el('span', { class: 'chip platform' }, ' iOS'));
+  if (g.android) badges.append(el('span', { class: 'chip platform' }, '🤖 Android'));
+  card.append(el('div', { class: 'fa-head' },
+    el('div', {},
+      el('div', { class: 'fa-name' }, g.name),
+      g.github
+        ? el('a', { class: 'chip gh', href: 'https://github.com/' + g.github, target: '_blank' }, g.github)
+        : el('span', { class: 'chip local' }, 'local only')),
+    badges));
+
+  // which computers have this app
+  const chips = el('div', { class: 'fa-machines' });
+  for (const inst of g.instances) {
+    chips.append(el('span', { class: 'fa-mchip' + (inst.machine.connected ? '' : ' off'), title: inst.app.cwd || '' },
+      el('span', { class: 'chip-dot' + (inst.machine.connected ? '' : ' off') }),
+      (OS_ICON[inst.os] || '🖥️') + ' ' + inst.machine.name,
+      inst.app.liveCount ? el('span', { class: 'fa-live' }, ' ● live') : null));
+  }
+  card.append(chips);
+
+  // one-click build actions, routed to the right computer
+  const actions = el('div', { class: 'fa-actions' });
+  if (g.ios) {
+    const mac = g.instances.find((i) => i.os === 'darwin' && i.machine.connected);
+    actions.append(buildBtn('  Build iOS', mac, g, 'ios',
+      'Connect a macOS computer that has this repo to build iOS'));
+  }
+  if (g.android) {
+    const tgt = g.instances.find((i) => i.machine.connected);
+    actions.append(buildBtn('🤖 Build Android', tgt, g, 'android',
+      'No connected computer has this repo'));
+  }
+  if (actions.childElementCount) card.append(actions);
+  return card;
+}
+
+function buildBtn(label, inst, g, platform, disabledTitle) {
+  if (!inst) return el('button', { class: 'btn ghost', disabled: 'true', title: disabledTitle }, label + ' · unavailable');
+  return el('button', { class: 'btn', title: 'Build on ' + inst.machine.name, onclick: () => runBuild(inst, g, platform) },
+    label + ' · ' + inst.machine.name);
+}
+
+const BUILD_PROMPT = {
+  ios: 'Build the iOS app for this project. Detect the toolchain from the project files (Expo/EAS, React Native, Flutter, or native Xcode) and run the appropriate command to produce an iOS build. Resolve dependencies first if needed (e.g. npm/yarn install, pod install). If code signing, a provisioning profile, or a simulator/device is required, state exactly what is missing instead of guessing. When finished, print the path to the resulting .app or .ipa.',
+  android: 'Build the Android app for this project. Detect the toolchain from the project files (Expo/EAS, React Native, Flutter, or native Gradle) and run the appropriate command to produce a release APK or AAB. Resolve dependencies first if needed. When finished, print the path to the resulting .apk or .aab.',
+};
+
+async function runBuild(inst, g, platform) {
+  const status = el('div', { class: 'q-status' }, '⏳ launching Claude on ' + inst.machine.name + '…');
+  const log = el('div', { class: 'q-answer build-log' });
+  const overlay = el('div', { class: 'auth-overlay', id: 'buildModal' },
+    el('div', { class: 'auth-card build-card' },
+      el('div', { class: 'auth-title' }, (platform === 'ios' ? '  iOS' : '🤖 Android') + ' build · ' + g.name),
+      el('div', { class: 'auth-sub' }, 'on ' + inst.machine.name + (OS_NAME[inst.os] ? ' (' + OS_NAME[inst.os] + ')' : '') + ' · each command is gated by your approvals settings'),
+      status, log,
+      el('div', { style: 'display:flex;justify-content:flex-end;margin-top:12px' },
+        el('button', { class: 'btn ghost', onclick: () => overlay.remove() }, 'Close'))));
+  document.body.append(overlay);
+
+  let acc = '';
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (inst.machine.agentId) headers['X-CC-Machine'] = inst.machine.agentId;
+    const res = await fetch('/api/query', { method: 'POST', headers,
+      body: JSON.stringify({ project: inst.app.id, prompt: BUILD_PROMPT[platform], write: true }) });
+    if (!res.ok) { const e = await res.json().catch(() => ({})); status.textContent = '✕ ' + (e.error || ('HTTP ' + res.status)); return; }
+    const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf('\n')) !== -1) {
+        const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
+        if (!line.trim()) continue;
+        let ev; try { ev = JSON.parse(line); } catch { continue; }
+        if (ev.type === 'started') status.textContent = '🤖 ' + (ev.model || 'Claude') + ' · building…';
+        else if (ev.type === 'tool') status.textContent = '🔧 ' + ev.tool + (ev.input && ev.input.command ? ' · ' + String(ev.input.command).slice(0, 90) : '') + '…';
+        else if (ev.type === 'tool_result') { acc += (acc ? '\n' : '') + String(ev.output || '').slice(0, 4000); log.textContent = acc; log.scrollTop = log.scrollHeight; }
+        else if (ev.type === 'text') { acc += (acc ? '\n\n' : '') + ev.text; log.textContent = acc; log.scrollTop = log.scrollHeight; }
+        else if (ev.type === 'stderr' || ev.type === 'error') status.textContent = '⚠ ' + ev.text;
+        else if (ev.type === 'done') status.textContent = ev.error ? '✕ build failed' : ('✓ done' + (ev.durationMs ? ' · ' + (ev.durationMs / 1000).toFixed(1) + 's' : ''));
+      }
+    }
+  } catch (e) { status.textContent = '✕ ' + e.message; }
+}
+
 // ---- nav + polling ---------------------------------------------------------
 function setActiveNav() {
   document.querySelectorAll('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.view === state.view && !state.projectId));
@@ -1581,6 +1852,7 @@ function navView(view) {
   state.view = view; state.projectId = null;
   setActiveNav();
   if (view === 'overview') renderOverview(state.overview);
+  else if (view === 'fleet') renderFleet();
   else if (view === 'workbench') renderWorkbench();
   else if (view === 'account') renderAccount();
   else if (view === 'approvals') renderApprovals();

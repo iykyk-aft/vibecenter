@@ -24,8 +24,29 @@ const PAIR_FILE = path.join(DATA_DIR, 'pairings.json');
 const readPairings = () => { try { return JSON.parse(fs.readFileSync(PAIR_FILE, 'utf8')); } catch { return {}; } };
 const writePairings = (p) => fs.writeFileSync(PAIR_FILE, JSON.stringify(p, null, 2));
 
-// Live agent links: userId -> { sse, pending: Map(reqId -> { res, timer }) }
+// A pairing record ties one token to one machine on one account:
+//   token -> { userId, agentId, name, createdAt }
+// Legacy pairings stored a bare userId string (one machine per account); those
+// are normalized on read so the old token keeps working as that user's machine.
+const asRecord = (token, v) => (typeof v === 'string'
+  ? { token, userId: v, agentId: v, name: 'My machine', createdAt: null }
+  : { token, ...v });
+function pairingFor(token) { const v = readPairings()[token]; return v ? asRecord(token, v) : null; }
+function pairingsForUser(userId) {
+  return Object.entries(readPairings()).map(([t, v]) => asRecord(t, v)).filter((r) => r.userId === userId);
+}
+function mintMachine(userId, name) {
+  const p = readPairings();
+  const token = crypto.randomBytes(24).toString('hex');
+  const agentId = 'm_' + crypto.randomBytes(8).toString('hex');
+  p[token] = { userId, agentId, name: (name || '').trim() || 'My machine', createdAt: new Date().toISOString() };
+  writePairings(p);
+  return { token, agentId, name: p[token].name };
+}
+
+// Live agent links: agentId -> { sse, pending: Map(reqId -> { res, timer }), userId, name }
 const agents = new Map();
+const connectedAgentsForUser = (userId) => [...agents.entries()].filter(([, e]) => e.userId === userId).map(([agentId, entry]) => ({ agentId, entry }));
 let reqSeq = 1;
 
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.svg': 'image/svg+xml', '.json': 'application/json', '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json' };
@@ -44,19 +65,22 @@ const server = http.createServer(async (req, res) => {
 
   // ---- agent channel: a user's machine dials in here (outbound) ----
   if (pathname === '/agent/connect') {
-    const pid = readPairings()[u.searchParams.get('token')];
-    if (!pid) { res.writeHead(401); return res.end('bad pairing token'); }
+    const pr = pairingFor(u.searchParams.get('token'));
+    if (!pr) { res.writeHead(401); return res.end('bad pairing token'); }
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
     res.write(': connected\n\n');
-    const entry = { sse: res, pending: new Map() };
-    if (agents.has(pid)) try { agents.get(pid).sse.end(); } catch { /* */ }
-    agents.set(pid, entry);
+    const entry = { sse: res, pending: new Map(), userId: pr.userId, name: pr.name };
+    // Only displace a prior link to THIS machine (a reconnect) — other machines
+    // on the same account stay connected.
+    if (agents.has(pr.agentId)) try { agents.get(pr.agentId).sse.end(); } catch { /* */ }
+    agents.set(pr.agentId, entry);
     const ping = setInterval(() => { try { res.write(': ping\n\n'); } catch { /* */ } }, 25000);
-    req.on('close', () => { clearInterval(ping); if (agents.get(pid) === entry) agents.delete(pid); });
+    req.on('close', () => { clearInterval(ping); if (agents.get(pr.agentId) === entry) agents.delete(pr.agentId); });
     return;
   }
   if (pathname === '/agent/respond' && req.method === 'POST') {
-    const entry = agents.get(readPairings()[req.headers['x-pair-token']]);
+    const pr = pairingFor(req.headers['x-pair-token']);
+    const entry = pr && agents.get(pr.agentId);
     const body = await readJson(req);
     if (entry && entry.pending.has(body.id)) {
       const { res: bres, timer } = entry.pending.get(body.id);
@@ -68,25 +92,65 @@ const server = http.createServer(async (req, res) => {
 
   // ---- broker-local endpoints ----
   if (pathname === '/api/health') return sendJson(res, 200, { ok: true, broker: true, build: assetBuild() });
-  if (pathname === '/api/auth/status') { const me = currentUser(req); return sendJson(res, 200, { hasUsers: hasUsers(), user: me, agentConnected: !!(me && agents.has(me.id)) }); }
+  if (pathname === '/api/auth/status') { const me = currentUser(req); return sendJson(res, 200, { hasUsers: hasUsers(), user: me, agentConnected: !!(me && connectedAgentsForUser(me.id).length) }); }
   if (pathname === '/api/auth/register' && req.method === 'POST') { const b = await readJson(req); const r = registerUser(b.email, b.password, b.invite); if (!r.ok) return sendJson(res, 400, r); setCookie(res, createSession(r.user.id)); return sendJson(res, 200, { ok: true, user: r.user }); }
   if (pathname === '/api/auth/login' && req.method === 'POST') { const b = await readJson(req); const me = verifyLogin(b.email, b.password); if (!me) return sendJson(res, 401, { error: 'Wrong email or password.' }); setCookie(res, createSession(me.id)); return sendJson(res, 200, { ok: true, user: me }); }
   if (pathname === '/api/auth/logout' && req.method === 'POST') { destroySession(parseCookies(req)['cc_session']); clearCookie(res); return sendJson(res, 200, { ok: true }); }
   if (pathname === '/api/auth/invite') { const me = currentUser(req); if (!me) return sendJson(res, 401, { error: 'Sign in required.' }); if (req.method === 'POST') return sendJson(res, 200, { ok: true, code: createInvite(me.id) }); return sendJson(res, 200, { invites: listInvites() }); }
   if (pathname === '/api/pair' && req.method === 'POST') {
+    // Back-compat: get-or-create this account's first machine, return its token.
     const me = currentUser(req); if (!me) return sendJson(res, 401, { error: 'Sign in required.' });
-    const p = readPairings();
-    let token = Object.keys(p).find((t) => p[t] === me.id);
-    if (!token) { token = crypto.randomBytes(24).toString('hex'); p[token] = me.id; writePairings(p); }
-    return sendJson(res, 200, { ok: true, token, connected: agents.has(me.id) });
+    let rec = pairingsForUser(me.id)[0];
+    if (!rec) rec = mintMachine(me.id, 'My machine');
+    return sendJson(res, 200, { ok: true, token: rec.token, agentId: rec.agentId, connected: agents.has(rec.agentId) });
+  }
+  // ---- machines: one account, many computers ----
+  if (pathname === '/api/machines' && req.method === 'GET') {
+    const me = currentUser(req); if (!me) return sendJson(res, 401, { error: 'Sign in required.' });
+    // Never leak stored tokens here — they're shown only once, at mint time.
+    const machines = pairingsForUser(me.id).map((r) => ({ agentId: r.agentId, name: r.name || 'My machine', createdAt: r.createdAt || null, connected: agents.has(r.agentId) }));
+    return sendJson(res, 200, { ok: true, machines });
+  }
+  if (pathname === '/api/machines' && req.method === 'POST') {
+    const me = currentUser(req); if (!me) return sendJson(res, 401, { error: 'Sign in required.' });
+    const b = await readJson(req);
+    const m = mintMachine(me.id, b.name || 'New machine');
+    return sendJson(res, 200, { ok: true, ...m });
+  }
+  if (pathname === '/api/machines/rename' && req.method === 'POST') {
+    const me = currentUser(req); if (!me) return sendJson(res, 401, { error: 'Sign in required.' });
+    const b = await readJson(req); const p = readPairings(); let changed = false;
+    for (const [t, v] of Object.entries(p)) {
+      const rec = asRecord(t, v);
+      if (rec.userId === me.id && rec.agentId === b.agentId) { p[t] = { userId: rec.userId, agentId: rec.agentId, name: (b.name || '').trim() || rec.name, createdAt: rec.createdAt }; changed = true; }
+    }
+    if (changed) { writePairings(p); const e = agents.get(b.agentId); if (e) e.name = (b.name || '').trim() || e.name; }
+    return sendJson(res, 200, { ok: changed });
+  }
+  if (pathname === '/api/machines/remove' && req.method === 'POST') {
+    const me = currentUser(req); if (!me) return sendJson(res, 401, { error: 'Sign in required.' });
+    const b = await readJson(req); const p = readPairings(); let changed = false;
+    for (const [t, v] of Object.entries(p)) {
+      const rec = asRecord(t, v);
+      if (rec.userId === me.id && rec.agentId === b.agentId) { delete p[t]; changed = true; }
+    }
+    if (changed) writePairings(p);
+    const e = agents.get(b.agentId);
+    if (e && e.userId === me.id) { try { e.sse.end(); } catch { /* */ } agents.delete(b.agentId); }
+    return sendJson(res, 200, { ok: changed });
   }
 
   // ---- everything else under /api → proxy to the user's own machine ----
   if (pathname.startsWith('/api/')) {
     const me = currentUser(req);
     if (!me) return sendJson(res, 401, { error: 'Sign in required.' });
-    const entry = agents.get(me.id);
-    if (!entry) return sendJson(res, 503, { error: 'agent-offline', message: 'Your machine isn’t connected. Start the Vibe Center agent + bridge with your pairing token.' });
+    // Route to the machine the client picked (X-CC-Machine), if it's theirs and
+    // online; otherwise default to their first connected machine.
+    const want = req.headers['x-cc-machine'];
+    let entry = null;
+    if (want) { if (pairingsForUser(me.id).some((r) => r.agentId === want)) entry = agents.get(want) || null; }
+    else { const first = connectedAgentsForUser(me.id)[0]; entry = first ? first.entry : null; }
+    if (!entry) return sendJson(res, 503, { error: 'agent-offline', message: 'That machine isn’t connected. Start the Vibe Center agent + bridge on it with its pairing token.' });
     const id = 'r' + (reqSeq++);
     const body = await readRaw(req);
     const timer = setTimeout(() => { if (entry.pending.has(id)) { entry.pending.delete(id); try { sendJson(res, 504, { error: 'Your machine did not respond in time.' }); } catch { /* */ } } }, 30000);

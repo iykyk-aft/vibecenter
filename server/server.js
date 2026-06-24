@@ -5,9 +5,9 @@ import os from 'node:os';
 import url from 'node:url';
 import crypto from 'node:crypto';
 import { listProjects, getProject, readSessionChat } from './sessions.js';
-import { githubFor, repoMetrics } from './github.js';
+import { githubFor, repoMetrics, detectRepo } from './github.js';
 import { approvalsSummary, addRule, removeRule } from './approvals.js';
-import { getCustomApps, addApp, removeApp, syntheticProjects } from './apps.js';
+import { getCustomApps, addApp, removeApp, syntheticProjects, detectStack } from './apps.js';
 import { ghStatus, projectsRoot, scaffoldProject } from './scaffold.js';
 import { hasUsers, registerUser, verifyLogin, createSession, destroySession, userForToken, createInvite, listInvites } from './auth.js';
 import { runQuery } from './claude.js';
@@ -342,6 +342,25 @@ async function handleApi(req, res, pathname) {
 
   if (pathname === '/api/account') {
     return sendJson(res, 200, accountPayload());
+  }
+
+  // Compact per-machine app list for the Fleet view: each app with its GitHub
+  // repo + detected stack/platforms, so the dashboard can group the same app
+  // across computers and offer the right (iOS / Android) build action. Fast by
+  // design (cached git detection) so it survives the broker's proxy timeout.
+  if (pathname === '/api/fleet-apps') {
+    const apps = await Promise.all(mergedProjects().map(async (p) => {
+      let github = p.githubOverride || null;
+      if (!github && p.cwd) { const r = await detectRepo(p.cwd); if (r) github = `${r.owner}/${r.repo}`; }
+      const stack = p.cwd ? detectStack(p.cwd) : null;
+      return {
+        id: p.id, name: p.name, cwd: p.cwd, github,
+        stack: stack ? stack.stack : null, stackLabel: stack ? stack.label : null,
+        ios: stack ? stack.ios : false, android: stack ? stack.android : false,
+        liveCount: p.liveCount, sessionCount: p.sessionCount, cost: p.cost, lastActivity: p.lastActivity,
+      };
+    }));
+    return sendJson(res, 200, { os: process.platform, host: os.hostname(), apps });
   }
 
   if (pathname === '/api/session') {

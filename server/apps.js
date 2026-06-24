@@ -53,6 +53,42 @@ function hash(s) {
   return h;
 }
 
+function hasXcodeProject(cwd) {
+  try { return fs.readdirSync(cwd).some((f) => f.endsWith('.xcodeproj') || f.endsWith('.xcworkspace')); }
+  catch { return false; }
+}
+
+// Best-effort, cheap (a few stat/reads) detection of the app's toolchain from
+// its marker files, so the fleet view can offer the right build action and show
+// which platforms (iOS / Android) it targets.
+const STACK_LABEL = {
+  flutter: 'Flutter', expo: 'Expo', 'react-native': 'React Native',
+  'native-ios': 'iOS (native)', 'native-android': 'Android (native)', node: 'Node',
+};
+export function detectStack(cwd) {
+  if (!cwd || !fs.existsSync(cwd)) return null;
+  const has = (f) => { try { return fs.existsSync(path.join(cwd, f)); } catch { return false; } };
+  let pkg = null;
+  try { pkg = JSON.parse(fs.readFileSync(path.join(cwd, 'package.json'), 'utf8')); } catch { /* no package.json */ }
+  const deps = pkg ? { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) } : {};
+  const iosDir = has('ios');
+  const androidDir = has('android');
+
+  let stack = null, ios = false, android = false;
+  if (has('pubspec.yaml')) { stack = 'flutter'; ios = true; android = true; }
+  else if (deps.expo) { stack = 'expo'; ios = true; android = true; }
+  else if (deps['react-native']) { stack = 'react-native'; ios = true; android = true; }
+  else if (iosDir || has('Podfile') || hasXcodeProject(cwd)) { stack = 'native-ios'; ios = true; }
+  else if (androidDir || has('build.gradle') || has('settings.gradle') || has('gradlew')) { stack = 'native-android'; android = true; }
+  else if (pkg) { stack = 'node'; }
+  if (!stack) return null;
+
+  // Presence of platform folders refines the flags regardless of detected stack.
+  if (iosDir) ios = true;
+  if (androidDir) android = true;
+  return { stack, label: STACK_LABEL[stack] || stack, ios, android };
+}
+
 // Build synthetic project entries for custom apps not already auto-discovered.
 export function syntheticProjects(discovered) {
   const known = new Set(discovered.map((p) => (p.cwd || '').toLowerCase().replace(/[\\/]+$/, '')));

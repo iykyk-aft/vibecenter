@@ -252,6 +252,8 @@ input:focus { border-color: var(--neon); box-shadow: 0 0 0 3px rgba(124,92,255,0
 }
 .btn:hover { transform: translateY(-1px); box-shadow: 0 8px 22px rgba(124,92,255,0.4); }
 .btn.ghost { background: rgba(255,255,255,0.05); }
+.btn.stop { background: linear-gradient(90deg, #ff5c7a, #e0354f); }
+.btn.stop:hover { box-shadow: 0 8px 22px rgba(224,53,79,0.4); }
 .add-rule { display: flex; gap: 8px; margin-top: 12px; max-width: 520px; }
 .add-rule input { flex: 1; }
 
@@ -431,6 +433,28 @@ textarea.q-input:focus { border-color: var(--neon); box-shadow: 0 0 0 3px rgba(1
   background: rgba(0,0,0,0.22); border-radius: 12px; padding: 0;
 }
 .q-answer:not(:empty) { padding: 14px 16px; border: 1px solid var(--glass-brd); }
+
+/* ---- fleet (computers + their apps, grouped by repo) ---- */
+.fleet-machines { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; }
+.fleet-machine { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 12px; background: rgba(255,255,255,.03); border: 1px solid var(--glass-brd); min-width: 180px; }
+.fleet-machine.off { opacity: .55; }
+.fleet-machine .fm-os { font-size: 17px; }
+.fm-name { font-size: 13px; font-weight: 600; }
+.fm-sub { font-size: 11px; color: var(--muted); }
+.fleet-apps { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }
+.fleet-app.shared { border-color: rgba(24,224,216,.32); }
+.fa-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.fa-name { font-size: 15px; font-weight: 700; margin-bottom: 8px; }
+.fa-badges { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.chip.platform { background: rgba(124,92,255,.14); border-color: rgba(124,92,255,.32); }
+.fa-machines { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 4px; }
+.fa-mchip { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text); background: rgba(255,255,255,.04); border: 1px solid var(--glass-brd); border-radius: 999px; padding: 4px 10px; }
+.fa-mchip.off { opacity: .5; }
+.fa-live { color: var(--good); font-weight: 600; }
+.fa-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+.fa-actions .btn { padding: 8px 14px; font-size: 12.5px; }
+.build-card { max-width: 720px; width: 92vw; text-align: left; }
+.build-log { max-height: 52vh; overflow-y: auto; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
 
 .empty { text-align: center; color: var(--dim); padding: 50px 20px; font-size: 13px; }
 .empty .big { font-size: 40px; margin-bottom: 12px; opacity: .6; }
