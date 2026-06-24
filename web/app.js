@@ -132,6 +132,84 @@ function areaChart(dailyMap, { height = 150, unit = 'tokens' } = {}) {
   return wrap;
 }
 
+// Cumulative spend this calendar month + dashed projection to month-end.
+function burnUpChart(dailyCost, { metered = true, height = 180 } = {}) {
+  const now = new Date();
+  const Y = now.getFullYear(), Mo = now.getMonth(), today = now.getDate();
+  const daysInMonth = new Date(Y, Mo + 1, 0).getDate();
+  const p2 = (n) => String(n).padStart(2, '0');
+  const key = (day) => `${Y}-${p2(Mo + 1)}-${p2(day)}`;
+  const cum = [];
+  let run = 0;
+  for (let d = 1; d <= today; d++) { run += dailyCost[key(d)] || 0; cum.push(run); }
+  const mtd = run;
+  const avgDaily = today > 0 ? mtd / today : 0;
+  const projected = mtd + avgDaily * (daysInMonth - today);
+  const pre = metered ? '' : '≈ ';
+
+  const W = 600, H = height, pad = 8, topPad = 16;
+  const max = Math.max(projected, mtd, 0.01);
+  const stepX = (W - pad * 2) / (daysInMonth - 1 || 1);
+  const x = (day) => pad + (day - 1) * stepX;
+  const y = (v) => H - pad - (v / max) * (H - pad * 2 - topPad);
+  const actPts = cum.map((v, i) => `${x(i + 1)},${y(v)}`);
+  const actLine = 'M' + actPts.join(' L');
+  const actArea = `M${x(1)},${H - pad} L` + actPts.join(' L') + ` L${x(today)},${H - pad} Z`;
+  const projLine = `M${x(today)},${y(mtd)} L${x(daysInMonth)},${y(projected)}`;
+  const grid = [0.25, 0.5, 0.75, 1].map((f) => {
+    const gy = H - pad - f * (H - pad * 2 - topPad);
+    return `<line x1="${pad}" y1="${gy}" x2="${W - pad}" y2="${gy}" stroke="rgba(255,255,255,.06)" stroke-width="1"/>`;
+  }).join('');
+
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.setAttribute('preserveAspectRatio', 'none');
+  svg.style.cssText = `width:100%;height:${H}px;display:block`;
+  svg.innerHTML = `
+    <defs><linearGradient id="burnGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ff5cc8" stop-opacity="0.4"/>
+      <stop offset="100%" stop-color="#ff5cc8" stop-opacity="0"/></linearGradient></defs>
+    ${grid}
+    <path d="${actArea}" fill="url(#burnGrad)"/>
+    <path d="${actLine}" fill="none" stroke="#ff5cc8" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="${projLine}" fill="none" stroke="#ffc24b" stroke-width="2" stroke-dasharray="5 5"/>
+    <circle cx="${x(today)}" cy="${y(mtd)}" r="4" fill="#ff5cc8"/>
+    <circle cx="${x(daysInMonth)}" cy="${y(projected)}" r="3.5" fill="#ffc24b"/>`;
+
+  const wrap = el('div', { class: 'chart-wrap', style: `position:relative;height:${H}px` });
+  wrap.append(svg);
+  wrap.append(el('div', { class: 'chart-cross' }));
+  const cross = wrap.lastChild; cross.style.display = 'none';
+  const tip = el('div', { class: 'chart-tip' }); tip.style.display = 'none';
+  wrap.append(tip);
+  wrap.addEventListener('mousemove', (e) => {
+    const rect = wrap.getBoundingClientRect();
+    const vbX = ((e.clientX - rect.left) / rect.width) * W;
+    let day = Math.round((vbX - pad) / stepX) + 1;
+    day = Math.max(1, Math.min(daysInMonth, day));
+    const isProj = day > today;
+    const val = isProj ? mtd + avgDaily * (day - today) : cum[day - 1];
+    const leftPx = (x(day) / W) * rect.width;
+    cross.style.display = tip.style.display = 'block';
+    cross.style.left = leftPx + 'px';
+    tip.innerHTML = `<b>${p2(Mo + 1)}-${p2(day)}</b> · ${pre}${fmtCost(val)}${isProj ? ' <span class="ct-d">projected</span>' : ''}`;
+    const tw = 170;
+    tip.style.left = Math.max(2, Math.min(rect.width - tw, leftPx - tw / 2)) + 'px';
+    tip.style.top = '6px';
+  });
+  wrap.addEventListener('mouseleave', () => { cross.style.display = tip.style.display = 'none'; });
+
+  const summary = el('div', { style: 'display:flex;gap:24px;flex-wrap:wrap;margin-top:12px' },
+    el('div', {}, el('div', { class: 'kpi-value pink', style: 'font-size:26px' }, pre + fmtCost(mtd)),
+      el('div', { class: 'kpi-sub' }, `spent over ${today} day${today > 1 ? 's' : ''}`)),
+    el('div', {}, el('div', { class: 'kpi-value', style: 'font-size:26px;color:var(--warn)' }, pre + fmtCost(projected)),
+      el('div', { class: 'kpi-sub' }, `projected by ${p2(Mo + 1)}-${daysInMonth}`)),
+    el('div', {}, el('div', { class: 'kpi-value', style: 'font-size:26px' }, pre + fmtCost(avgDaily)),
+      el('div', { class: 'kpi-sub' }, 'avg / day')));
+  return el('div', {}, wrap, summary);
+}
+
 // Stacked area of token usage per model over time.
 function stackedAreaChart(modelDaily, { height = 170, labelOf = (m) => m } = {}) {
   const days = Object.keys(modelDaily || {}).sort().slice(-30);
@@ -578,6 +656,12 @@ async function renderAccount() {
     rangeCard('Last 24 hours', a.ranges.today, metered),
     rangeCard('Last 7 days', a.ranges.week, metered),
     rangeCard('Last 30 days', a.ranges.month, metered)));
+
+  // month-to-date spend pace + end-of-month projection
+  v.append(el('div', { class: 'card fade-in' },
+    el('div', { class: 'card-title' }, (metered ? 'Spend Pace' : 'Value Pace'),
+      el('span', { class: 'muted' }, 'month-to-date' + (metered ? '' : ' · API-equiv'))),
+    burnUpChart(a.dailyCost || {}, { metered })));
 
   // token composition + cache efficiency
   const c = a.composition;
