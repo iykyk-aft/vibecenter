@@ -26,6 +26,39 @@ The broker (`broker/broker.js`) is the always-on cloud service. Pushing to
    vibecenter ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart vibecenter-broker, /usr/bin/systemctl status vibecenter-broker
    ```
 
+## Reverse proxy + HTTPS
+
+The systemd unit binds the broker to `127.0.0.1:7900` (`BROKER_HOST=127.0.0.1`),
+so it is **not** reachable from the internet directly — a reverse proxy
+terminates TLS and forwards to it. Pick one:
+
+- **Caddy (simplest, auto-HTTPS):** [`deploy/Caddyfile`](./Caddyfile)
+  ```bash
+  sudo apt install -y caddy
+  sudo cp deploy/Caddyfile /etc/caddy/Caddyfile   # edit broker.example.com first
+  sudo systemctl reload caddy
+  ```
+- **nginx + Let's Encrypt (certbot):** [`deploy/nginx-vibecenter.conf`](./nginx-vibecenter.conf)
+  ```bash
+  sudo cp deploy/nginx-vibecenter.conf /etc/nginx/sites-available/vibecenter
+  sudo ln -s /etc/nginx/sites-available/vibecenter /etc/nginx/sites-enabled/
+  sudo apt install -y certbot python3-certbot-nginx
+  sudo certbot --nginx -d broker.example.com      # provisions cert + 443 + redirect
+  sudo nginx -t && sudo systemctl reload nginx
+  ```
+
+Both are tuned for the broker's SSE streaming (no response buffering, long
+timeouts) so live agent output isn't cut off.
+
+### Firewall
+
+Expose only 80/443 (and SSH); keep 7900 private:
+```bash
+sudo ufw allow OpenSSH
+sudo ufw allow 80,443/tcp
+sudo ufw enable
+```
+
 ## GitHub repository secrets
 
 Set these under **Settings → Secrets and variables → Actions**:

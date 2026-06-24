@@ -1,0 +1,23 @@
+# Caddy reverse proxy for the Vibe Center broker — automatic HTTPS (Let's Encrypt).
+# This is the simplest path: Caddy provisions and renews the TLS cert for you.
+#
+# Setup:
+#   sudo apt install -y caddy            # or: https://caddyserver.com/docs/install
+#   # point your domain's A/AAAA record at this VPS, then:
+#   sudo cp deploy/Caddyfile /etc/caddy/Caddyfile
+#   #  -> edit broker.example.com below to your domain
+#   sudo systemctl reload caddy
+#
+# Open ports 80 + 443 (Caddy needs 80 for the ACME challenge):
+#   sudo ufw allow 80,443/tcp
+
+broker.example.com {
+	encode gzip
+
+	reverse_proxy 127.0.0.1:7900 {
+		# The broker holds long-lived SSE channels open and streams Claude output
+		# token-by-token. flush_interval -1 disables response buffering so nothing
+		# is held back; Caddy keeps the upstream connection open as long as needed.
+		flush_interval -1
+	}
+}

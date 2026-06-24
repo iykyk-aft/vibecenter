@@ -1112,6 +1112,13 @@ function closeBenchSession(id) {
 function benchSessionsForProject(projectId) {
   return ((state.bench && state.bench.sessions) || []).filter((s) => s.project && s.project.id === projectId);
 }
+// End an external (VS Code / terminal) session by killing its claude process.
+async function stopExternalSession(projectId, sessionId) {
+  if (!confirm('End this Claude Code session?\n\nThis terminates the running claude process — any unsaved work in that session is lost. If it’s the session driving this dashboard, it will stop too.')) return;
+  const r = await api('/api/stop-session', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session: sessionId }) }).catch(() => ({ ok: false, error: 'network error' }));
+  if (!r || !r.ok) { alert('Could not end session: ' + ((r && r.error) || 'unknown')); return; }
+  setTimeout(() => renderProject(projectId), 600);
+}
 function closeAllBench(projectId) {
   const b = ensureBench();
   const keep = [];
@@ -1389,7 +1396,8 @@ async function renderProject(id) {
 
   // sessions
   const sessionRows = p.sessions.map((s) => el('div', { class: 'session-row clickable', onclick: () => openSessionChat(p.id, s.id, s.title), title: 'Open & continue this chat' },
-    el('div', { class: 'st' }, s.active ? el('span', { class: 'chip live', style: 'margin-right:8px' }, el('span', { class: 'chip-dot' }), 'live') : null, s.title),
+    el('div', { class: 'st' }, s.active ? el('span', { class: 'chip live', style: 'margin-right:8px' }, el('span', { class: 'chip-dot' }), 'live') : null, s.title,
+      s.active ? el('button', { class: 'btn ghost', style: 'margin-left:10px;padding:3px 9px;font-size:11px', title: 'End this Claude Code session (kills the process)', onclick: (e) => { e.stopPropagation(); stopExternalSession(p.id, s.id); } }, '⏹ End') : null),
     el('div', { class: 'app-meta' }, fmtCost(s.cost)),
     el('div', { class: 'app-meta' }, `${fmtNum(s.billableTokens)} tok`),
     el('div', { class: 'app-meta' }, `${s.toolCalls} tools`),

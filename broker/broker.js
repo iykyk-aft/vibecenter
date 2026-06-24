@@ -14,6 +14,9 @@ const ROOT = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '..'
 const WEB_DIR = path.join(ROOT, 'web');
 const DATA_DIR = process.env.BROKER_DATA || path.join(ROOT, 'broker', 'data');
 const PORT = process.env.BROKER_PORT || 7900;
+// Bind address. Defaults to all interfaces for local dev; behind a reverse proxy
+// set BROKER_HOST=127.0.0.1 so the port isn't reachable from the public internet.
+const HOST = process.env.BROKER_HOST || '0.0.0.0';
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
 // Keep the broker's accounts separate from any local agent's, then load auth.
@@ -171,4 +174,4 @@ const server = http.createServer(async (req, res) => {
   });
 });
 
-server.listen(PORT, () => console.log(`\n  🛰️  Vibe Center broker → http://localhost:${PORT}\n  accounts: ${process.env.CC_AUTH_FILE}\n`));
+server.listen(PORT, HOST, () => console.log(`\n  🛰️  Vibe Center broker → http://${HOST}:${PORT}\n  accounts: ${process.env.CC_AUTH_FILE}\n`));

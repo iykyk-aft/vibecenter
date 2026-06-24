@@ -34,6 +34,7 @@ process.stdin.on('end', () => {
     cwd,
     tool: data.tool_name || null,
     summary: data.message || summarize(data.tool_name, data.tool_input),
+    ppid: process.ppid,                         // the Claude session is an ancestor of this hook → lets the dashboard end it
   };
   try {
     fs.mkdirSync(path.dirname(LOG), { recursive: true });

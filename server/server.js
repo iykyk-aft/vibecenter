@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import url from 'node:url';
 import crypto from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { listProjects, getProject, readSessionChat } from './sessions.js';
 import { githubFor, repoMetrics, detectRepo } from './github.js';
 import { approvalsSummary, addRule, removeRule } from './approvals.js';
@@ -92,6 +93,53 @@ function stopRuns(match) {
     }
   }
   return killed;
+}
+
+// ---- ending EXTERNAL sessions (VS Code / terminal) --------------------------
+// The logger hook records its parent PID per session; the running Claude process
+// is an ancestor of that hook. Resolve the freshest ppid, walk up to claude.exe,
+// and kill that process tree.
+function sessionPpid(sessionId) {
+  try {
+    const lines = fs.readFileSync(path.join(DATA_DIR, 'approval-events.jsonl'), 'utf8').split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (!lines[i]) continue;
+      let e; try { e = JSON.parse(lines[i]); } catch { continue; }
+      if (e.session === sessionId && e.ppid) return { ppid: e.ppid, cwd: e.cwd, ts: e.time };
+    }
+  } catch { /* no log yet */ }
+  return null;
+}
+function killClaudeForPpid(ppid) {
+  if (process.platform !== 'win32') {
+    // POSIX: walk /proc-free via ps; kill the nearest claude ancestor.
+    const ps = spawnSync('ps', ['-eo', 'pid=,ppid=,comm='], { encoding: 'utf8' });
+    if (ps.status !== 0) return { ok: false, error: 'could not enumerate processes' };
+    const by = new Map();
+    for (const ln of ps.stdout.split('\n')) { const m = ln.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/); if (m) by.set(+m[1], { parent: +m[2], name: m[3] }); }
+    let pid = ppid, target = null;
+    for (let i = 0; i < 15 && pid; i++) { const p = by.get(pid); if (!p) break; if (/claude/i.test(p.name)) { target = pid; break; } pid = p.parent; }
+    if (!target) return { ok: false, error: 'no live claude process for that session' };
+    const k = spawnSync('kill', ['-TERM', String(target)], { encoding: 'utf8' });
+    return { ok: k.status === 0, pid: target };
+  }
+  const snap = spawnSync('powershell', ['-NoProfile', '-Command',
+    'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name | ConvertTo-Json -Compress'],
+    { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, windowsHide: true });
+  if (!snap.stdout) return { ok: false, error: 'could not enumerate processes' };
+  let procs; try { procs = JSON.parse(snap.stdout); } catch { return { ok: false, error: 'process snapshot parse failed' }; }
+  if (!Array.isArray(procs)) procs = [procs];
+  const byId = new Map(procs.map((p) => [p.ProcessId, p]));
+  let pid = ppid, target = null;
+  for (let i = 0; i < 15 && pid; i++) {
+    const p = byId.get(pid);
+    if (!p) break;
+    if (/claude/i.test(p.Name)) { target = pid; break; }
+    pid = p.ParentProcessId;
+  }
+  if (!target) return { ok: false, error: 'no live claude process for that session (it may have already ended)' };
+  const k = spawnSync('taskkill', ['/F', '/T', '/PID', String(target)], { encoding: 'utf8', windowsHide: true });
+  return { ok: k.status === 0, pid: target, output: (k.stdout || k.stderr || '').trim() };
 }
 
 function readGateway() {
@@ -528,6 +576,16 @@ async function handleApi(req, res, pathname) {
     const killed = stopRuns((id, r) =>
       (body.runId && id === body.runId) || (body.project && r.project === body.project));
     return sendJson(res, 200, { ok: true, killed });
+  }
+
+  // End an EXTERNAL (VS Code / terminal) session by killing its claude process.
+  if (pathname === '/api/stop-session' && req.method === 'POST') {
+    const body = await readBody(req);
+    if (!body.session) return sendJson(res, 400, { error: 'session required' });
+    const info = sessionPpid(body.session);
+    if (!info) return sendJson(res, 404, { error: 'Can only end sessions that have run a tool since the logger hook was installed (no recorded process for this one).' });
+    const result = killClaudeForPpid(info.ppid);
+    return sendJson(res, result.ok ? 200 : 502, result);
   }
 
   // ---- approval gateway ----
