@@ -1360,7 +1360,20 @@ async function refresh() {
   }
 }
 
+// Auto-reload the desktop window when the UI assets change on disk, so the
+// local app always reflects the latest build without a manual hard-reload.
+let __build = null;
+async function checkForUpdate() {
+  try {
+    const h = await api('/api/health');
+    if (__build == null) { __build = h.build; return; }
+    if (h.build && h.build !== __build) location.reload();
+  } catch { /* server blip */ }
+}
+
 document.querySelectorAll('.nav-item').forEach((b) => b.addEventListener('click', () => navView(b.dataset.view)));
 
 refresh().then(() => navView('overview'));
 state.refreshTimer = setInterval(refresh, 5000);
+checkForUpdate();
+state.updateTimer = setInterval(checkForUpdate, 4000);

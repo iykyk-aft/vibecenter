@@ -280,7 +280,7 @@ async function handleApi(req, res, pathname) {
   }
 
   if (pathname === '/api/health') {
-    return sendJson(res, 200, { ok: true, name: 'vibecenter', version: VERSION, uptimeSec: Math.round(process.uptime()) });
+    return sendJson(res, 200, { ok: true, name: 'vibecenter', version: VERSION, uptimeSec: Math.round(process.uptime()), build: assetBuild() });
   }
 
   if (pathname.startsWith('/api/project/')) {
@@ -452,6 +452,16 @@ function streamQuery(res, req, cwd, prompt, model, resumeId, permissionMode) {
   req.on('close', () => { if (child && !child.killed) { try { child.kill(); } catch { /* */ } } });
 }
 
+// Newest mtime of the app shell — bumps whenever the UI is edited, so the
+// desktop window can detect an update and reload itself.
+function assetBuild() {
+  let m = 0;
+  for (const f of ['app.js', 'styles.css', 'index.html']) {
+    try { m = Math.max(m, fs.statSync(path.join(WEB_DIR, f)).mtimeMs); } catch { /* missing */ }
+  }
+  return Math.round(m);
+}
+
 function serveStatic(req, res, pathname) {
   let rel = pathname === '/' ? '/index.html' : pathname;
   const filePath = path.join(WEB_DIR, path.normalize(rel).replace(/^(\.\.[\\/])+/, ''));
@@ -460,6 +470,9 @@ function serveStatic(req, res, pathname) {
     if (err) { res.writeHead(404); return res.end('not found'); }
     res.writeHead(200, {
       'Content-Type': MIME[path.extname(filePath)] || 'application/octet-stream',
+      // Never cache app shell/assets, so the local desktop window always shows
+      // the latest UI without a manual hard-reload.
+      'Cache-Control': 'no-store, must-revalidate',
       'Content-Security-Policy': "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
       'X-Content-Type-Options': 'nosniff',
       'Referrer-Policy': 'no-referrer',
