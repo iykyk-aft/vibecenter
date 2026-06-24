@@ -1,6 +1,8 @@
 name: Deploy broker
 
 # Redeploy the broker to the VPS whenever main moves. Manual runs allowed too.
+# The runner has private-repo read access, so it rsyncs the code to the box —
+# the VPS itself needs no GitHub credentials.
 on:
   push:
     branches: [main]
@@ -34,15 +36,30 @@ jobs:
             echo "::notice title=Broker deploy skipped::DEPLOY_HOST secret not set — add DEPLOY_HOST / DEPLOY_USER / DEPLOY_SSH_KEY in repo Settings → Secrets to enable auto-deploy."
           fi
 
-      - name: SSH in and run deploy script
+      - name: Checkout
         if: steps.cfg.outputs.configured == 'true'
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          port: ${{ secrets.DEPLOY_PORT || 22 }}
-          script_stop: true
-          script: |
-            cd ${{ secrets.DEPLOY_PATH || '/opt/vibecenter' }}
-            APP_DIR="$PWD" bash deploy/deploy.sh
+        uses: actions/checkout@v4
+
+      - name: Rsync to VPS and restart broker
+        if: steps.cfg.outputs.configured == 'true'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          set -euo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          REMOTE="${DEPLOY_PATH:-/opt/vibecenter}"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > deploy_key
+          chmod 600 deploy_key
+          SSH="ssh -i deploy_key -o StrictHostKeyChecking=accept-new -p $PORT"
+          # Ship the code, but never clobber the broker's live accounts/pairings
+          # (broker/data) or node_modules / .git.
+          rsync -az --delete \
+            --exclude '.git' --exclude 'node_modules' --exclude 'broker/data' --exclude 'data' \
+            -e "$SSH" ./ "$DEPLOY_USER@$DEPLOY_HOST:$REMOTE/"
+          # Install prod deps if changed + restart the service.
+          $SSH "$DEPLOY_USER@$DEPLOY_HOST" "cd '$REMOTE' && APP_DIR=\"\$PWD\" bash deploy/deploy.sh"
+          rm -f deploy_key

@@ -1,87 +1,70 @@
 # Broker deployment
 
 The broker (`broker/broker.js`) is the always-on cloud service. Pushing to
-`main` redeploys it to the VPS automatically via
-[`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml).
+`main` redeploys it via [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml):
+the GitHub Action (which has private-repo read access) **rsyncs the code to the
+VPS** and restarts the service, so the VPS itself needs no GitHub credentials.
 
-## One-time VPS setup
+## Quick start (IP-only, plain HTTP)
 
-1. Clone the repo to the deploy path (default `/opt/vibecenter`):
+1. **On a fresh Ubuntu/Debian VPS**, run the provisioner as root. It installs
+   Node + Caddy, creates the `vibecenter` user, authorizes the deploy key, and
+   writes the systemd service, sudoers, Caddy reverse proxy (IP-only HTTP on
+   :80), and firewall rules:
    ```bash
-   sudo git clone https://github.com/iykyk-aft/vibecenter.git /opt/vibecenter
-   sudo chown -R vibecenter:vibecenter /opt/vibecenter
+   sudo bash deploy/provision.sh
    ```
-2. Install the systemd unit and start it:
-   ```bash
-   sudo cp /opt/vibecenter/deploy/vibecenter-broker.service /etc/systemd/system/
-   sudo systemctl daemon-reload
-   sudo systemctl enable --now vibecenter-broker
-   ```
-   (Edit `User`, `WorkingDirectory`, and `Environment` in the unit first if your
-   box differs. If you run the broker under **pm2** instead, name the process
-   `vibecenter-broker` and `deploy.sh` will restart it automatically.)
-3. Give the GitHub deploy user passwordless restart rights, e.g. in
-   `sudo visudo`:
-   ```
-   vibecenter ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart vibecenter-broker, /usr/bin/systemctl status vibecenter-broker
-   ```
+   (Copy `deploy/provision.sh` to the box, or `curl` it down.) It prints the
+   public IP and the secrets to set next. It does **not** fetch the app code —
+   the first deploy does that.
 
-## Reverse proxy + HTTPS
+2. **Add GitHub repo secrets** (Settings → Secrets and variables → Actions):
 
-The systemd unit binds the broker to `127.0.0.1:7900` (`BROKER_HOST=127.0.0.1`),
-so it is **not** reachable from the internet directly — a reverse proxy
-terminates TLS and forwards to it. Pick one:
+   | Secret | Value |
+   | --- | --- |
+   | `DEPLOY_HOST` | your VPS IP (printed by the provisioner) |
+   | `DEPLOY_USER` | `vibecenter` |
+   | `DEPLOY_SSH_KEY` | the **private** deploy key (its public half is baked into `provision.sh`) |
+   | `DEPLOY_PORT` | SSH port — optional, defaults to `22` |
+   | `DEPLOY_PATH` | checkout path — optional, defaults to `/opt/vibecenter` |
 
-- **Caddy (simplest, auto-HTTPS):** [`deploy/Caddyfile`](./Caddyfile)
-  ```bash
-  sudo apt install -y caddy
-  sudo cp deploy/Caddyfile /etc/caddy/Caddyfile   # edit broker.example.com first
-  sudo systemctl reload caddy
-  ```
-- **nginx + Let's Encrypt (certbot):** [`deploy/nginx-vibecenter.conf`](./nginx-vibecenter.conf)
-  ```bash
-  sudo cp deploy/nginx-vibecenter.conf /etc/nginx/sites-available/vibecenter
-  sudo ln -s /etc/nginx/sites-available/vibecenter /etc/nginx/sites-enabled/
-  sudo apt install -y certbot python3-certbot-nginx
-  sudo certbot --nginx -d broker.example.com      # provisions cert + 443 + redirect
-  sudo nginx -t && sudo systemctl reload nginx
-  ```
+3. **Push to `main`** (or run the **Deploy broker** workflow manually). The
+   Action rsyncs the code to `/opt/vibecenter`, runs `npm install`, and starts
+   the broker. It's then reachable at `http://<your-ip>/`.
 
-Both are tuned for the broker's SSE streaming (no response buffering, long
-timeouts) so live agent output isn't cut off.
+> ⚠️ **Plain HTTP** means login cookies travel unencrypted. Fine for testing
+> from a trusted network; add TLS before real use (see below).
 
-### Firewall
+## Adding HTTPS later (a domain)
 
-Expose only 80/443 (and SSH); keep 7900 private:
-```bash
-sudo ufw allow OpenSSH
-sudo ufw allow 80,443/tcp
-sudo ufw enable
+Point a domain's A record at the VPS, then edit `/etc/caddy/Caddyfile` to
+replace the `:80` block with your hostname — Caddy auto-provisions a Let's
+Encrypt cert:
+```caddy
+broker.example.com {
+    encode gzip
+    reverse_proxy 127.0.0.1:7900 { flush_interval -1 }
+}
 ```
-
-## GitHub repository secrets
-
-Set these under **Settings → Secrets and variables → Actions**:
-
-| Secret | Purpose | Example |
-| --- | --- | --- |
-| `DEPLOY_HOST` | VPS hostname or IP | `203.0.113.10` |
-| `DEPLOY_USER` | SSH user that owns the checkout | `vibecenter` |
-| `DEPLOY_SSH_KEY` | Private key whose public half is in the user's `authorized_keys` | (full PEM) |
-| `DEPLOY_PORT` | SSH port (optional, defaults to 22) | `22` |
-| `DEPLOY_PATH` | Checkout path (optional, defaults to `/opt/vibecenter`) | `/opt/vibecenter` |
-
-Generate a dedicated key (don't reuse a personal one):
 ```bash
-ssh-keygen -t ed25519 -f vibecenter-deploy -C "github-deploy"
-# add vibecenter-deploy.pub to ~vibecenter/.ssh/authorized_keys on the VPS
-# paste the private vibecenter-deploy into the DEPLOY_SSH_KEY secret
+sudo ufw allow 443/tcp
+sudo systemctl reload caddy
 ```
+An nginx + certbot alternative ships in [`deploy/nginx-vibecenter.conf`](./nginx-vibecenter.conf).
+
+## How the pieces fit
+
+- The broker binds to `127.0.0.1:7900` (`BROKER_HOST=127.0.0.1` in the unit), so
+  the port is never exposed directly — Caddy on :80 is the only public surface.
+- `provision.sh` enables the `vibecenter-broker` systemd service; it starts
+  serving after the first deploy populates the code.
+- The deploy excludes `broker/data` from rsync, so accounts/pairings on the box
+  are never clobbered by a deploy.
 
 ## Manual deploy
 
-From the VPS, any time:
+The Action is the supported path. To re-apply by hand on the VPS after the code
+is in place:
 ```bash
-cd /opt/vibecenter && bash deploy/deploy.sh
+cd /opt/vibecenter && bash deploy/deploy.sh   # npm install + restart
 ```
-Or trigger the workflow by hand from the Actions tab (**Run workflow**).
