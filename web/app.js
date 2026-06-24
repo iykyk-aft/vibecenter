@@ -542,6 +542,29 @@ function hbars(items) {
     el('div', { class: 'hbar-val' }, fmtNum(it.value)))));
   return wrap;
 }
+function sessionHistogram(sizes) {
+  if (!sizes || !sizes.length) return el('div', { class: 'empty' }, 'No sessions yet');
+  const EDGES = [0, 50e3, 100e3, 250e3, 500e3, 1e6, 2e6, 5e6, Infinity];
+  const LAB = ['<50K', '50–100K', '100–250K', '250–500K', '500K–1M', '1–2M', '2–5M', '5M+'];
+  const counts = new Array(LAB.length).fill(0);
+  for (const v of sizes) {
+    for (let i = 0; i < EDGES.length - 1; i++) { if (v >= EDGES[i] && v < EDGES[i + 1]) { counts[i]++; break; } }
+  }
+  const max = Math.max(...counts, 1);
+  const sorted = [...sizes].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  const mean = sizes.reduce((a, b) => a + b, 0) / sizes.length;
+  const wrap = el('div', { class: 'hist' });
+  counts.forEach((c, i) => {
+    wrap.append(el('div', { class: 'hist-col', title: `${LAB[i]} tok — ${c} session${c !== 1 ? 's' : ''}` },
+      el('div', { class: 'hist-count' }, c || ''),
+      el('div', { class: 'hist-bar-wrap' }, el('div', { class: 'hist-bar', style: `height:${Math.max(2, (c / max) * 100)}%` })),
+      el('div', { class: 'hist-lab' }, LAB[i])));
+  });
+  return el('div', {}, wrap,
+    el('div', { class: 'kpi-sub', style: 'margin-top:10px' },
+      `${sizes.length} sessions · median ${fmtNum(median)} · mean ${fmtNum(mean)} billable tok`));
+}
 function statChip(icon, label, val) {
   return el('div', { class: 'stat-chip' }, el('span', { class: 'sc-ico' }, icon),
     el('div', {}, el('div', { class: 'sc-val' }, fmtNum(val)), el('div', { class: 'sc-lab' }, label)));
@@ -692,6 +715,11 @@ async function renderAccount() {
   v.append(el('div', { class: 'card fade-in' },
     el('div', { class: 'card-title' }, 'Cumulative Tokens', el('span', { class: 'muted' }, 'running total')),
     areaChart(cumulative(a.daily))));
+
+  // session size distribution
+  v.append(el('div', { class: 'card fade-in' },
+    el('div', { class: 'card-title' }, 'Session Size Distribution', el('span', { class: 'muted' }, 'how big your sessions run')),
+    sessionHistogram(a.sessionSizes)));
 
   // top tools + lifetime actions
   const toolItems = a.tools.slice(0, 10).map((t) => ({ label: t.name, value: t.count }));

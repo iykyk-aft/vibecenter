@@ -181,6 +181,7 @@ function accountPayload() {
   const heat = Array.from({ length: 7 }, () => new Array(24).fill(0)); // [day][hour] tokens
   const comp = { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 }; // token composition
   const dailyTok = {}, dailyCost = {};
+  const sessionSizes = []; // billable tokens per session, for the distribution histogram
   const activeDays = new Set();
   let win5Tok = 0, win5Msgs = 0, firstTs = Infinity;
   const range = { today: { tokens: 0, cost: 0 }, week: { tokens: 0, cost: 0 }, month: { tokens: 0, cost: 0 } };
@@ -192,6 +193,7 @@ function accountPayload() {
     comp.input += p.tokens.input; comp.output += p.tokens.output;
     comp.cacheCreation += p.tokens.cacheCreation; comp.cacheRead += p.tokens.cacheRead;
     for (const s of p.sessions) {
+      if (s.billableTokens > 0) sessionSizes.push(s.billableTokens);
       for (const [name, c] of Object.entries(s.toolBreakdown || {})) toolAgg[name] = (toolAgg[name] || 0) + c;
       for (const m of s.msgTimes || []) {
         allTok += m.tok; allCost += m.cost;
@@ -235,6 +237,7 @@ function accountPayload() {
     hourly, dow, heatmap: heat,
     composition: comp,
     daily: dailyTok, dailyCost,
+    sessionSizes,
     tools: Object.entries(toolAgg).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count),
     derived: {
       edits: sum('Edit', 'Write', 'MultiEdit', 'NotebookEdit'),
