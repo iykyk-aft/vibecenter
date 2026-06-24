@@ -240,3 +240,39 @@ export function listProjects() {
 export function getProject(id) {
   return listProjects().find((p) => p.id === id) || null;
 }
+
+// Injected/meta user entries we don't want to show as chat.
+const META_RE = /^<(command|local-command|system-reminder|user-prompt-submit|bash-)/i;
+
+// Reconstruct the human-readable conversation for one session.
+export function readSessionChat(projectId, sessionId) {
+  const file = path.join(PROJECTS_DIR, projectId, sessionId + '.jsonl');
+  if (!fs.existsSync(file)) return null;
+  const lines = readJsonLines(file);
+  const msgs = [];
+  let lastAssistantId = null;
+  for (const o of lines) {
+    if (o.type === 'user' && o.message) {
+      const c = o.message.content;
+      let text = '';
+      if (typeof c === 'string') text = c;
+      else if (Array.isArray(c)) text = c.filter((b) => b.type === 'text').map((b) => b.text).join('\n');
+      text = (text || '').trim();
+      if (text && !META_RE.test(text)) msgs.push({ role: 'user', text, ts: o.timestamp });
+      lastAssistantId = null;
+    } else if (o.type === 'assistant' && o.message) {
+      const id = o.message.id;
+      const blocks = o.message.content || [];
+      const text = blocks.filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim();
+      const tools = blocks.filter((b) => b.type === 'tool_use').map((b) => b.name);
+      if (id && id === lastAssistantId) {
+        const last = msgs[msgs.length - 1]; // streamed rewrite → update final state
+        if (last && last.role === 'assistant') { last.text = text; last.tools = tools; }
+      } else if (text || tools.length) {
+        msgs.push({ role: 'assistant', text, tools, ts: o.timestamp });
+        lastAssistantId = id;
+      }
+    }
+  }
+  return msgs;
+}

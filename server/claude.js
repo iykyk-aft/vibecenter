@@ -44,10 +44,14 @@ function cmpVer(a, b) {
 // Spawn a headless query in `cwd` and stream parsed events to onEvent().
 // Read-only (plan permission mode) — Claude can explore but won't edit.
 // Returns the child process so the caller can kill it on client disconnect.
-export function runQuery({ cwd, prompt, model, binOverride }, onEvent) {
+export function runQuery({ cwd, prompt, model, binOverride, resumeId, permissionMode }, onEvent) {
   const bin = resolveClaudeBin(binOverride);
-  const args = ['-p', prompt, '--permission-mode', 'plan',
+  // 'plan' = read-only exploration; 'default' = can edit/run, but Edit/Write/Bash
+  // are gated by the Command Center approvals hook so the user confirms each.
+  const mode = permissionMode === 'default' ? 'default' : 'plan';
+  const args = ['-p', prompt, '--permission-mode', mode,
     '--output-format', 'stream-json', '--verbose'];
+  if (resumeId) args.push('--resume', resumeId);
   if (model) args.push('--model', model);
 
   let child;
@@ -84,7 +88,7 @@ export function runQuery({ cwd, prompt, model, binOverride }, onEvent) {
 
 function handleEvent(o, onEvent) {
   if (o.type === 'system' && o.subtype === 'init') {
-    onEvent({ type: 'started', model: o.model, tools: (o.tools || []).length });
+    onEvent({ type: 'started', model: o.model, tools: (o.tools || []).length, sessionId: o.session_id });
   } else if (o.type === 'assistant' && o.message) {
     for (const b of o.message.content || []) {
       if (b.type === 'text' && b.text) onEvent({ type: 'text', text: b.text });

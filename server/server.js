@@ -3,10 +3,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import url from 'node:url';
-import { listProjects, getProject } from './sessions.js';
+import { listProjects, getProject, readSessionChat } from './sessions.js';
 import { githubFor, repoMetrics } from './github.js';
 import { approvalsSummary, addRule, removeRule } from './approvals.js';
 import { getCustomApps, addApp, removeApp, syntheticProjects } from './apps.js';
+import { ghStatus, projectsRoot, scaffoldProject } from './scaffold.js';
 import { runQuery } from './claude.js';
 import { prettyModel } from './pricing.js';
 
@@ -171,6 +172,9 @@ function accountPayload() {
   const toolAgg = {};
   const hourly = new Array(24).fill(0);
   const dow = new Array(7).fill(0);
+  const heat = Array.from({ length: 7 }, () => new Array(24).fill(0)); // [day][hour] tokens
+  const comp = { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 }; // token composition
+  const dailyTok = {}, dailyCost = {};
   const activeDays = new Set();
   let win5Tok = 0, win5Msgs = 0, firstTs = Infinity;
   const range = { today: { tokens: 0, cost: 0 }, week: { tokens: 0, cost: 0 }, month: { tokens: 0, cost: 0 } };
@@ -179,6 +183,8 @@ function accountPayload() {
   for (const p of projects) {
     sessions += p.sessionCount;
     tools += p.toolCalls;
+    comp.input += p.tokens.input; comp.output += p.tokens.output;
+    comp.cacheCreation += p.tokens.cacheCreation; comp.cacheRead += p.tokens.cacheRead;
     for (const s of p.sessions) {
       for (const [name, c] of Object.entries(s.toolBreakdown || {})) toolAgg[name] = (toolAgg[name] || 0) + c;
       for (const m of s.msgTimes || []) {
@@ -188,7 +194,11 @@ function accountPayload() {
         const d = new Date(m.t);
         hourly[d.getHours()] += m.tok;
         dow[d.getDay()] += m.tok;
-        activeDays.add(isoDay(d));
+        heat[d.getDay()][d.getHours()] += m.tok;
+        const dk = isoDay(d);
+        dailyTok[dk] = (dailyTok[dk] || 0) + m.tok;
+        dailyCost[dk] = (dailyCost[dk] || 0) + m.cost;
+        activeDays.add(dk);
         if (m.t < firstTs) firstTs = m.t;
         const age = now - m.t;
         if (age <= 5 * HOUR) { win5Tok += m.tok; win5Msgs++; }
@@ -215,7 +225,10 @@ function accountPayload() {
     totals: { tokens: allTok, cost: allCost, sessions, tools, activeDays: activeDays.size, firstTs: firstTs === Infinity ? null : firstTs },
     window5h: { tokens: win5Tok, messages: win5Msgs, peak: peak5 },
     ranges: range,
-    hourly, dow,
+    budgets: readConfig().budgets || {},
+    hourly, dow, heatmap: heat,
+    composition: comp,
+    daily: dailyTok, dailyCost,
     tools: Object.entries(toolAgg).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count),
     derived: {
       edits: sum('Edit', 'Write', 'MultiEdit', 'NotebookEdit'),
@@ -234,6 +247,13 @@ async function handleApi(req, res, pathname) {
 
   if (pathname === '/api/account') {
     return sendJson(res, 200, accountPayload());
+  }
+
+  if (pathname === '/api/session') {
+    const q = new URL(req.url, 'http://localhost').searchParams;
+    const chat = readSessionChat(q.get('project'), q.get('id'));
+    if (!chat) return sendJson(res, 404, { error: 'session not found' });
+    return sendJson(res, 200, { messages: chat });
   }
 
   if (pathname === '/api/health') {
@@ -285,10 +305,19 @@ async function handleApi(req, res, pathname) {
       const body = await readBody(req);
       const cfg = readConfig();
       if (typeof body.githubToken === 'string') cfg.githubToken = body.githubToken.trim();
+      if (body.budgets && typeof body.budgets === 'object') {
+        cfg.budgets = cfg.budgets || {};
+        for (const k of ['day', 'window5h']) {
+          if (k in body.budgets) {
+            const n = Number(body.budgets[k]);
+            cfg.budgets[k] = Number.isFinite(n) && n > 0 ? n : null;
+          }
+        }
+      }
       writeConfig(cfg);
-      return sendJson(res, 200, { ok: true, hasToken: !!githubToken() });
+      return sendJson(res, 200, { ok: true, hasToken: !!githubToken(), budgets: cfg.budgets || {} });
     }
-    return sendJson(res, 200, { hasToken: !!githubToken(), plan: readPlan() });
+    return sendJson(res, 200, { hasToken: !!githubToken(), plan: readPlan(), budgets: readConfig().budgets || {} });
   }
 
   if (pathname === '/api/apps') {
@@ -301,6 +330,30 @@ async function handleApi(req, res, pathname) {
     return sendJson(res, 200, { apps: getCustomApps() });
   }
 
+  // GitHub CLI install/auth state — drives what the "create repo" option can do.
+  if (pathname === '/api/gh-status') {
+    return sendJson(res, 200, { ...ghStatus(), projectsRoot: projectsRoot(readConfig()) });
+  }
+
+  // Create a new project folder (+ optional GitHub repo) and register it as an app.
+  if (pathname === '/api/scaffold' && req.method === 'POST') {
+    const body = await readBody(req);
+    if (!body.name || !String(body.name).trim()) return sendJson(res, 400, { error: 'Give the project a name.' });
+    const result = scaffoldProject({
+      name: String(body.name).trim(),
+      root: projectsRoot(readConfig()),
+      createRepo: !!body.createRepo,
+      visibility: body.visibility === 'public' ? 'public' : 'private',
+    });
+    if (!result.ok) return sendJson(res, 400, result);
+    const reg = addApp({
+      name: String(body.name).trim(),
+      path: result.path,
+      github: result.github ? `https://github.com/${result.github}` : null,
+    });
+    return sendJson(res, 200, { ...result, projectId: reg.id, registered: reg.ok });
+  }
+
   if (pathname === '/api/query' && req.method === 'POST') {
     const body = await readBody(req);
     // Only ever run in a folder we already track — never an arbitrary path.
@@ -308,7 +361,8 @@ async function handleApi(req, res, pathname) {
     const cwd = proj && proj.cwd;
     if (!cwd) return sendJson(res, 400, { error: 'This application has no local folder to query.' });
     if (!body.prompt || !String(body.prompt).trim()) return sendJson(res, 400, { error: 'empty prompt' });
-    return streamQuery(res, req, cwd, String(body.prompt).trim(), body.model);
+    // write:true → 'default' mode (can edit/run, gated by the approvals hook).
+    return streamQuery(res, req, cwd, String(body.prompt).trim(), body.model, body.session, body.write ? 'default' : 'plan');
   }
 
   // ---- approval gateway ----
@@ -361,14 +415,14 @@ async function handleApi(req, res, pathname) {
 }
 
 // Stream a headless Claude query back as newline-delimited JSON events.
-function streamQuery(res, req, cwd, prompt, model) {
+function streamQuery(res, req, cwd, prompt, model, resumeId, permissionMode) {
   res.writeHead(200, {
     'Content-Type': 'application/x-ndjson; charset=utf-8',
     'Cache-Control': 'no-cache',
     'X-Accel-Buffering': 'no',
   });
   const send = (ev) => { try { res.write(JSON.stringify(ev) + '\n'); } catch { /* client gone */ } };
-  const child = runQuery({ cwd, prompt, model }, (ev) => {
+  const child = runQuery({ cwd, prompt, model, resumeId, permissionMode }, (ev) => {
     send(ev);
     if (ev.type === 'done') { try { res.end(); } catch { /* */ } }
   });
