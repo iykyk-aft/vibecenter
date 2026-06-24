@@ -2063,7 +2063,7 @@ async function addMachine(out, renderList) {
   out.append(el('div', { style: 'color:var(--muted);font-size:13px;line-height:1.7' },
     'On ', el('strong', {}, r.name), ', start the agent (', el('code', {}, 'npm start'), '), then run the bridge with this one-time token:',
     el('div', { style: 'margin:10px 0;padding:12px 14px;background:rgba(0,0,0,.3);border-radius:10px;font-family:monospace;color:var(--neon2);word-break:break-all' },
-      'node broker/connect.mjs ' + r.token),
+      'node broker/connect.mjs ' + r.token + ' ' + location.origin),
     el('div', { style: 'color:var(--warn);font-size:12px' }, 'Copy it now — the token is shown only once.')));
 }
 async function renameMachine(m, renderList) {
