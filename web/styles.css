@@ -4,8 +4,8 @@
   --glass: rgba(22, 26, 44, 0.55);
   --glass-brd: rgba(130, 150, 220, 0.14);
   --text: #e7ebff;
-  --muted: #8b93b8;
-  --dim: #5b6488;
+  --muted: #9aa3c8;
+  --dim: #757fa8;
   --neon: #7c5cff;
   --neon2: #18e0d8;
   --neon3: #ff5cc8;
@@ -244,7 +244,21 @@ input[type=text], input[type=password] {
   padding: 12px 14px; color: var(--text); font-size: 13px; font-family: inherit; outline: none;
   transition: border .15s, box-shadow .15s;
 }
+input[type=email], input[type=number], input:not([type]) {
+  background: rgba(0,0,0,0.3); border: 1px solid var(--glass-brd); border-radius: 11px;
+  padding: 12px 14px; color: var(--text); font-size: 13px; font-family: inherit; outline: none;
+}
 input:focus { border-color: var(--neon); box-shadow: 0 0 0 3px rgba(124,92,255,0.15); }
+/* Buttons & selects don't inherit text color by default → they were rendering
+   black on the dark theme. Make them readable. */
+button { color: inherit; font-family: inherit; }
+select {
+  background: rgba(0,0,0,0.3); border: 1px solid var(--glass-brd); border-radius: 11px;
+  color: var(--text); padding: 9px 12px; font-size: 13px; font-family: inherit; outline: none; cursor: pointer;
+}
+select:focus { border-color: var(--neon); box-shadow: 0 0 0 3px rgba(124,92,255,0.15); }
+select option { background: #14162a; color: var(--text); }
+::placeholder { color: var(--dim); opacity: 1; }
 .btn {
   background: linear-gradient(90deg, var(--neon), #6a4cff); color: #fff; border: none;
   padding: 11px 20px; border-radius: 11px; font-size: 13px; font-weight: 600; cursor: pointer;

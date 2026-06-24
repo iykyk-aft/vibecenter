@@ -1506,10 +1506,15 @@ async function alwaysAllowSilent({ project, autoAll, id }) {
 function approvalModeCard(p, gw) {
   if (!p.cwd) return null;
   const locked = gw.autoAll;
-  const mode = locked ? 'auto' : ((gw.projectMode && gw.projectMode[p.cwd]) || 'manual');
+  // Match the server's case/slash-insensitive key comparison, otherwise the
+  // selection never reflects what was saved (looks like nothing happened).
+  const norm = (x) => String(x || '').toLowerCase().replace(/[\\/]+/g, '/').replace(/\/+$/, '');
+  let mode = 'manual';
+  if (locked) mode = 'auto';
+  else for (const k in (gw.projectMode || {})) if (norm(k) === norm(p.cwd)) mode = gw.projectMode[k];
   const opt = (val, label, desc) => el('button', {
     class: 'mode-opt' + (mode === val ? ' on' : ''), ...(locked ? { disabled: 'disabled' } : {}),
-    onclick: () => setGateway({ project: p.cwd, mode: val }).then(() => renderProject(p.id)),
+    onclick: async () => { await setGateway({ project: p.cwd, mode: val }); try { state.gateway = await api('/api/gateway'); } catch { /* */ } syncBenchApprovals(); renderProject(p.id); },
   }, el('div', { class: 'mo-t' }, label), el('div', { class: 'mo-d' }, desc));
   return el('div', { class: 'card fade-in' },
     el('div', { class: 'card-title' }, '🛡️ Approvals for this workspace',
