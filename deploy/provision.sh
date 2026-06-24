@@ -14,7 +14,7 @@ set -euo pipefail
 DEPLOY_USER=vibecenter
 APP_DIR=/opt/vibecenter
 # Public half of the deploy key the GitHub Action uses to SSH in. Safe to embed.
-DEPLOY_PUBKEY='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILxf7E/Sz+1O2PopWC7Vq1cyzpZW0gV5alhB9N1bmVCM github-deploy-vibecenter'
+DEPLOY_PUBKEY='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJAlaU+PBDCHPPzLFT5SLxEPaZu4zyhTB/ZucvulL3zr github-deploy-vibecenter'
 
 [ "$(id -u)" -eq 0 ] || { echo "Run as root:  sudo bash provision.sh" >&2; exit 1; }
 
