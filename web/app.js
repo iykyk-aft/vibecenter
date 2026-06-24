@@ -1818,9 +1818,9 @@ async function inviteCard() {
   const inviteText = (code) =>
 `🎟️ You're invited to Vibe Center
 
-1) Download the app:
-   ${origin}/download?invite=${code}
-   Unzip it.  (No Node yet? Install it: https://nodejs.org)
+1) Download the app from GitHub:
+   https://github.com/iykyk-aft/vibecenter/archive/refs/heads/main.zip
+   Unzip it (you'll get a "vibecenter-main" folder).  (No Node yet? https://nodejs.org)
 
 2) Sign up here with your invite code:
    ${origin}
