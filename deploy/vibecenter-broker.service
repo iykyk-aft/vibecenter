@@ -1,0 +1,27 @@
+# systemd unit for the Vibe Center broker (the always-on cloud service).
+# One-time install on the VPS:
+#   sudo cp deploy/vibecenter-broker.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now vibecenter-broker
+# Edit User / WorkingDirectory / Environment below to match your box.
+
+[Unit]
+Description=Vibe Center broker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vibecenter
+WorkingDirectory=/opt/vibecenter
+# Override the port/data dir here if you don't want the defaults (7900, ./broker/data).
+Environment=BROKER_PORT=7900
+# Environment=BROKER_DATA=/opt/vibecenter/broker/data
+ExecStart=/usr/bin/node broker/broker.js
+Restart=on-failure
+RestartSec=3
+# Keep the SQLite/JSON data and logs out of the way of a hostile restart loop.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Install]
+WantedBy=multi-user.target
