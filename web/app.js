@@ -48,25 +48,34 @@ async function api(path, opts) {
 }
 
 // ---- SVG charts ------------------------------------------------------------
-function areaChart(dailyMap, { height = 150 } = {}) {
+function areaChart(dailyMap, { height = 150, unit = 'tokens' } = {}) {
   const days = Object.keys(dailyMap).sort();
   if (days.length === 0) return el('div', { class: 'empty' }, 'No activity yet');
   // keep last 30 days
   const slice = days.slice(-30);
   const vals = slice.map((d) => dailyMap[d]);
+  const n = slice.length;
   const max = Math.max(...vals, 1);
-  const W = 600, H = height, pad = 8;
-  const stepX = slice.length > 1 ? (W - pad * 2) / (slice.length - 1) : 0;
-  const y = (v) => H - pad - (v / max) * (H - pad * 2 - 14);
+  const peakIdx = vals.indexOf(Math.max(...vals));
+  const avg = vals.reduce((s, v) => s + v, 0) / n;
+  const W = 600, H = height, pad = 8, topPad = 14;
+  const stepX = n > 1 ? (W - pad * 2) / (n - 1) : 0;
+  const y = (v) => H - pad - (v / max) * (H - pad * 2 - topPad);
   const x = (i) => pad + i * stepX;
   const pts = vals.map((v, i) => `${x(i)},${y(v)}`);
   const linePath = 'M' + pts.join(' L');
-  const areaPath = `M${x(0)},${H - pad} L` + pts.join(' L') + ` L${x(vals.length - 1)},${H - pad} Z`;
+  const areaPath = `M${x(0)},${H - pad} L` + pts.join(' L') + ` L${x(n - 1)},${H - pad} Z`;
+  const grid = [0.25, 0.5, 0.75, 1].map((f) => {
+    const gy = H - pad - f * (H - pad * 2 - topPad);
+    return `<line x1="${pad}" y1="${gy}" x2="${W - pad}" y2="${gy}" stroke="rgba(255,255,255,.06)" stroke-width="1"/>`;
+  }).join('');
+  const avgY = y(avg);
 
   const ns = 'http://www.w3.org/2000/svg';
   const svg = document.createElementNS(ns, 'svg');
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
   svg.setAttribute('preserveAspectRatio', 'none');
+  svg.style.cssText = `width:100%;height:${H}px;display:block`;
   svg.innerHTML = `
     <defs>
       <linearGradient id="areaGrad" x1="0" y1="0" x2="0" y2="1">
@@ -78,16 +87,47 @@ function areaChart(dailyMap, { height = 150 } = {}) {
         <stop offset="100%" stop-color="#7c5cff"/>
       </linearGradient>
     </defs>
+    ${grid}
+    <line x1="${pad}" y1="${avgY}" x2="${W - pad}" y2="${avgY}" stroke="#ffc24b" stroke-width="1" stroke-dasharray="4 4" opacity="0.6"/>
     <path d="${areaPath}" fill="url(#areaGrad)"/>
     <path d="${linePath}" fill="none" stroke="url(#lineGrad)" stroke-width="2.5"
       stroke-linejoin="round" stroke-linecap="round"
       style="filter: drop-shadow(0 0 6px rgba(124,92,255,.5))"/>
-    ${vals.map((v, i) => `<circle cx="${x(i)}" cy="${y(v)}" r="${i === vals.length - 1 ? 4 : 0}" fill="#18e0d8"/>`).join('')}
+    <circle cx="${x(peakIdx)}" cy="${y(vals[peakIdx])}" r="3.5" fill="#ff5cc8"/>
+    <circle cx="${x(n - 1)}" cy="${y(vals[n - 1])}" r="4" fill="#18e0d8"/>
   `;
-  const wrap = el('div', { class: 'chart-wrap' });
+  const wrap = el('div', { class: 'chart-wrap', style: `position:relative;height:${H}px` });
   wrap.append(svg);
+  wrap.append(el('div', { class: 'chart-ymax' }, fmtNum(max)));
+  wrap.append(el('div', { class: 'chart-avg', style: `top:${(avgY / H) * 100}%` }, 'avg ' + fmtNum(avg)));
+
+  // interactive crosshair + tooltip (HTML overlay → no SVG-text distortion)
+  const cross = el('div', { class: 'chart-cross' });
+  const dot = el('div', { class: 'chart-dot' });
+  const tip = el('div', { class: 'chart-tip' });
+  cross.style.display = dot.style.display = tip.style.display = 'none';
+  wrap.append(cross, dot, tip);
+  wrap.addEventListener('mousemove', (e) => {
+    const rect = wrap.getBoundingClientRect();
+    const vbX = ((e.clientX - rect.left) / rect.width) * W;
+    let i = Math.round((vbX - pad) / (stepX || 1));
+    i = Math.max(0, Math.min(n - 1, i));
+    const leftPx = (x(i) / W) * rect.width;
+    const topPx = (y(vals[i]) / H) * rect.height;
+    cross.style.display = dot.style.display = tip.style.display = 'block';
+    cross.style.left = leftPx + 'px';
+    dot.style.left = leftPx + 'px'; dot.style.top = topPx + 'px';
+    const d = vals[i] - (i > 0 ? vals[i - 1] : vals[i]);
+    const arrow = i > 0 ? (d > 0 ? `▲ ${fmtNum(Math.abs(d))}` : d < 0 ? `▼ ${fmtNum(Math.abs(d))}` : '—') : '';
+    tip.innerHTML = `<b>${slice[i].slice(5)}</b>&nbsp; ${fmtNum(vals[i])} ${unit}` + (arrow ? `<span class="ct-d ${d >= 0 ? 'up' : 'dn'}">${arrow}</span>` : '');
+    const tw = 150;
+    tip.style.left = Math.max(2, Math.min(rect.width - tw, leftPx - tw / 2)) + 'px';
+    tip.style.top = Math.max(2, topPx - 38) + 'px';
+  });
+  wrap.addEventListener('mouseleave', () => { cross.style.display = dot.style.display = tip.style.display = 'none'; });
+
   const labels = el('div', { style: 'display:flex;justify-content:space-between;font-size:10px;color:var(--dim);margin-top:6px;' },
-    el('span', {}, slice[0]?.slice(5)), el('span', {}, slice[slice.length - 1]?.slice(5)));
+    el('span', {}, slice[0]?.slice(5)), el('span', {}, slice[n - 1]?.slice(5)));
   wrap.append(labels);
   return wrap;
 }
