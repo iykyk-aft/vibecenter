@@ -327,6 +327,16 @@ input:focus { border-color: var(--neon); box-shadow: 0 0 0 3px rgba(124,92,255,0
 .cb-tool { font-size: 10.5px; padding: 2px 8px; border-radius: 7px; background: rgba(24,224,216,.12); color: var(--neon2); }
 .cb-status { font-size: 11px; color: var(--neon2); margin-top: 8px; }
 .cb-stream { display: flex; flex-direction: column; gap: 8px; }
+/* ---- in-app approval prompts ---- */
+.approval-dock { position: fixed; right: 20px; bottom: 20px; z-index: 90; display: flex; flex-direction: column; gap: 12px; width: min(380px, calc(100vw - 40px)); }
+.approval-toast { background: linear-gradient(180deg, rgba(24,26,46,.98), rgba(14,15,28,.99)); border: 1px solid rgba(255,194,75,.45); border-radius: 14px; box-shadow: 0 16px 44px rgba(0,0,0,.55); padding: 14px 15px; animation: toastIn .22s ease; }
+@keyframes toastIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+.at-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.at-badge { font-weight: 700; font-size: 12.5px; color: var(--warn); }
+.at-proj { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.at-tool { font-size: 12.5px; margin-bottom: 11px; line-height: 1.5; }
+.at-tool code { display: block; margin-top: 5px; font-family: 'Cascadia Code','Consolas',monospace; font-size: 11.5px; color: var(--neon2); background: rgba(0,0,0,.3); padding: 6px 9px; border-radius: 7px; max-height: 90px; overflow: auto; word-break: break-all; }
+.at-actions { display: flex; gap: 7px; flex-wrap: wrap; }
 /* Claude-Code-style tool call: ⏺ Tool(args) + collapsible output */
 .tool-call { border-left: 2px solid rgba(124,92,255,.5); padding-left: 10px; }
 .tool-call.err { border-left-color: var(--bad); }

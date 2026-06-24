@@ -1366,6 +1366,60 @@ async function alwaysAllow({ project, autoAll, id }) {
   renderApprovals();
 }
 
+// ---- in-app approval prompts (pop up on any screen) ------------------------
+function startApprovalWatch() {
+  clearInterval(state.approvalWatchTimer);
+  pollApprovalPrompts();
+  state.approvalWatchTimer = setInterval(pollApprovalPrompts, 2000);
+}
+function approvalDock() {
+  let d = $('#approvalDock');
+  if (!d) { d = el('div', { id: 'approvalDock', class: 'approval-dock' }); document.body.append(d); }
+  return d;
+}
+async function pollApprovalPrompts() {
+  let data;
+  try { data = await api('/api/pending'); } catch { return; }
+  state.approvalToasts = state.approvalToasts || {};
+  const pend = (data && data.pending) || [];
+  const ids = new Set(pend.map((p) => p.id));
+  for (const id of Object.keys(state.approvalToasts)) {
+    if (!ids.has(id)) { state.approvalToasts[id].remove(); delete state.approvalToasts[id]; }
+  }
+  // The Approvals screen already lists these — don't double up there.
+  if (state.view === 'approvals') return;
+  for (const p of pend) {
+    if (state.approvalToasts[p.id]) continue;
+    const t = approvalToast(p);
+    state.approvalToasts[p.id] = t;
+    approvalDock().append(t);
+  }
+}
+function approvalToast(p) {
+  const card = el('div', { class: 'approval-toast' });
+  const act = (fn) => async () => { card.style.opacity = '.5'; try { await fn(); } catch { /* */ } card.remove(); delete state.approvalToasts[p.id]; };
+  card.append(
+    el('div', { class: 'at-head' },
+      el('span', { class: 'at-badge' }, '🛡️ Approve tool call'),
+      el('span', { class: 'at-proj' }, p.project || '')),
+    el('div', { class: 'at-tool' }, el('b', {}, p.tool || 'tool'), p.input ? el('code', {}, String(p.input)) : null),
+    el('div', { class: 'at-actions' },
+      el('button', { class: 'btn', style: 'padding:6px 12px', onclick: act(() => decideApproval(p.id, 'allow')) }, '✓ Allow'),
+      el('button', { class: 'btn ghost', style: 'padding:6px 10px', title: 'Always allow this workspace', onclick: act(() => alwaysAllowSilent({ project: p.cwd, id: p.id })) }, 'Always app'),
+      el('button', { class: 'btn ghost', style: 'padding:6px 10px', title: 'Always allow every workspace', onclick: act(() => alwaysAllowSilent({ autoAll: true, id: p.id })) }, 'Always all'),
+      el('button', { class: 'btn ghost', style: 'padding:6px 10px', onclick: act(() => decideApproval(p.id, 'deny')) }, '✕ Deny')));
+  return card;
+}
+async function decideApproval(id, decision) {
+  await api('/api/approval-decide', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, decision }) });
+  if (state.view === 'approvals') pollPending();
+}
+async function alwaysAllowSilent({ project, autoAll, id }) {
+  if (autoAll) await setGateway({ autoAll: true });
+  else if (project) await setGateway({ project, mode: 'auto' });
+  await api('/api/approval-decide', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, decision: 'allow' }) });
+}
+
 function approvalModeCard(p, gw) {
   if (!p.cwd) return null;
   const locked = gw.autoAll;
@@ -2019,7 +2073,7 @@ function switchMachine(agentId) {
 function closeAuthGate() { const g = $('#authGate'); if (g) g.remove(); }
 function lockApp() {
   if ($('#authGate')) return;
-  clearInterval(state.refreshTimer); clearInterval(state.updateTimer); clearInterval(state.approvalsTimer);
+  clearInterval(state.refreshTimer); clearInterval(state.updateTimer); clearInterval(state.approvalsTimer); clearInterval(state.approvalWatchTimer);
   fetch('/api/auth/status').then((r) => r.json()).then(renderAuthGate).catch(() => renderAuthGate({ hasUsers: true }));
 }
 async function logout() {
@@ -2089,6 +2143,7 @@ async function boot() {
   clearInterval(state.refreshTimer); state.refreshTimer = setInterval(refresh, 5000);
   checkForUpdate();
   clearInterval(state.updateTimer); state.updateTimer = setInterval(checkForUpdate, 4000);
+  startApprovalWatch();
 }
 
 document.querySelectorAll('.nav-item').forEach((b) => b.addEventListener('click', () => navView(b.dataset.view)));

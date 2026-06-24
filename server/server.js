@@ -87,17 +87,26 @@ function writeGateway(g) {
   cfg.gateway = g;
   writeConfig(cfg);
 }
+// Windows reports drive-letter case + trailing slashes inconsistently, so match
+// workspace paths case/slash-insensitively (otherwise an "auto" workspace can
+// silently fall back to manual and the approval is missed).
+function normPath(p) { return String(p || '').toLowerCase().replace(/[\\/]+/g, '/').replace(/\/+$/, ''); }
+function lookupByPath(map, cwd) {
+  const key = normPath(cwd);
+  for (const [k, v] of Object.entries(map || {})) if (normPath(k) === key) return v;
+  return undefined;
+}
 function gatewayActiveFor(cwd) {
   const g = readGateway();
   if (!g.enabled) return false;
-  if (cwd && g.projects && g.projects[cwd] === false) return false; // per-app opt-out
+  if (cwd && lookupByPath(g.projects, cwd) === false) return false; // per-app opt-out
   return true;
 }
 // 'manual' = ask on the dashboard; 'auto' = always allow (this app, or all apps).
 function gatewayModeFor(cwd) {
   const g = readGateway();
   if (g.autoAll) return 'auto';
-  return (cwd && g.projectMode[cwd]) || 'manual';
+  return lookupByPath(g.projectMode, cwd) || 'manual';
 }
 
 // Read ONLY the non-secret plan fields from credentials (never tokens) so the
@@ -407,6 +416,14 @@ async function handleApi(req, res, pathname) {
     return sendJson(res, 200, summary);
   }
 
+  // Lightweight pending-approvals feed — polled globally so the in-app prompt
+  // can pop up on any screen, not just the Approvals tab.
+  if (pathname === '/api/pending') {
+    const now = Date.now();
+    for (const [id, p] of pending) if (now - p.ts > 5 * 60 * 1000) pending.delete(id);
+    return sendJson(res, 200, { pending: [...pending.values()].filter((p) => p.status === 'pending').sort((a, b) => a.ts - b.ts) });
+  }
+
   if (pathname === '/api/allowlist' && req.method === 'POST') {
     const body = await readBody(req);
     if (body.action === 'add' && body.rule) return sendJson(res, 200, addRule(body.rule));
@@ -486,8 +503,14 @@ async function handleApi(req, res, pathname) {
       const g = readGateway();
       if (typeof body.enabled === 'boolean') g.enabled = body.enabled;
       if (typeof body.autoAll === 'boolean') g.autoAll = body.autoAll;
-      if (body.project && typeof body.projectEnabled === 'boolean') g.projects[body.project] = body.projectEnabled;
-      if (body.project && (body.mode === 'manual' || body.mode === 'auto')) g.projectMode[body.project] = body.mode;
+      if (body.project && typeof body.projectEnabled === 'boolean') {
+        for (const k of Object.keys(g.projects)) if (normPath(k) === normPath(body.project)) delete g.projects[k];
+        g.projects[normPath(body.project)] = body.projectEnabled;
+      }
+      if (body.project && (body.mode === 'manual' || body.mode === 'auto')) {
+        for (const k of Object.keys(g.projectMode)) if (normPath(k) === normPath(body.project)) delete g.projectMode[k];
+        g.projectMode[normPath(body.project)] = body.mode;
+      }
       writeGateway(g);
       return sendJson(res, 200, g);
     }
