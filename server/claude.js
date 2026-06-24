@@ -92,7 +92,15 @@ function handleEvent(o, onEvent) {
   } else if (o.type === 'assistant' && o.message) {
     for (const b of o.message.content || []) {
       if (b.type === 'text' && b.text) onEvent({ type: 'text', text: b.text });
-      else if (b.type === 'tool_use') onEvent({ type: 'tool', tool: b.name });
+      else if (b.type === 'tool_use') onEvent({ type: 'tool', id: b.id, tool: b.name, input: b.input });
+    }
+  } else if (o.type === 'user' && o.message) {
+    // Tool results come back as user-role messages in stream-json.
+    for (const b of o.message.content || []) {
+      if (b.type !== 'tool_result') continue;
+      let out = b.content;
+      if (Array.isArray(out)) out = out.map((x) => (typeof x === 'string' ? x : (x.text || ''))).join('');
+      onEvent({ type: 'tool_result', id: b.tool_use_id, output: String(out == null ? '' : out), isError: !!b.is_error });
     }
   } else if (o.type === 'result') {
     onEvent({ type: 'done', cost: o.total_cost_usd, turns: o.num_turns, subtype: o.subtype, durationMs: o.duration_ms });

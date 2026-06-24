@@ -1,7 +1,7 @@
 'use strict';
 
 const COLORS = ['#7c5cff', '#18e0d8', '#ff5cc8', '#35e08b', '#ffc24b', '#5b9bff', '#ff8d5c'];
-const state = { view: 'overview', projectId: null, overview: null, refreshTimer: null };
+const state = { view: 'overview', projectId: null, overview: null, refreshTimer: null, machines: null, machineId: null };
 
 // ---- helpers ---------------------------------------------------------------
 const $ = (sel, el = document) => el.querySelector(sel);
@@ -43,6 +43,10 @@ function ago(ms) {
 }
 
 async function api(path, opts) {
+  opts = opts || {};
+  // Tag every proxied request with the machine the user is viewing. Harmless on
+  // the local agent (which ignores it) and in single-machine broker mode.
+  if (state.machineId) opts.headers = { ...(opts.headers || {}), 'X-CC-Machine': state.machineId };
   const res = await fetch(path, opts);
   if (res.status === 401 && !path.startsWith('/api/auth/')) lockApp();
   return res.json();
@@ -823,25 +827,70 @@ function openSessionChat(projectId, sessionId, title, opts = {}) {
     if (body.querySelector('.empty')) body.innerHTML = '';
     body.append(chatBubble({ role: 'user', text: prompt }));
     const ans = el('div', { class: 'chat-msg cb-assistant' });
-    const textEl = el('div', { class: 'cb-text' });
+    const streamEl = el('div', { class: 'cb-stream' });
     const status = el('div', { class: 'cb-status' }, '⏳ launching…');
-    ans.append(textEl, status);
+    ans.append(streamEl, status);
     body.append(ans);
     body.scrollTop = body.scrollHeight;
     ta.value = ''; btn.disabled = true; btn.textContent = '…';
-    streamContinue(projectId, curSession, prompt, textEl, status, body, btn, write, (sid) => { curSession = sid; });
+    streamContinue(projectId, curSession, prompt, streamEl, status, body, btn, write, (sid) => { curSession = sid; });
   }
 }
 
-async function streamContinue(projectId, sessionId, prompt, textEl, status, body, btn, write, onSession, onStatus) {
-  let acc = '';
+function toolSummary(tool, input) {
+  if (!input || typeof input !== 'object') return '';
+  if (input.command) return String(input.command);
+  if (input.file_path) return String(input.file_path);
+  if (input.path) return String(input.path);
+  if (input.pattern) return String(input.pattern) + (input.path ? ' in ' + input.path : '');
+  if (input.url) return String(input.url);
+  if (input.description) return String(input.description);
+  const k = Object.keys(input);
+  return k.length ? k.slice(0, 3).join(', ') : '';
+}
+// A Claude-Code-style tool line: ⏺ Tool(args) with collapsible output below.
+function toolCard(ev) {
+  const out = el('pre', { class: 'tc-out' });
+  out.style.display = 'none';
+  const toggle = el('span', { class: 'tc-toggle' }, '');
+  const head = el('div', { class: 'tc-head' },
+    el('span', { class: 'tc-mark' }, '⏺'),
+    el('span', { class: 'tc-name' }, ev.tool),
+    el('span', { class: 'tc-arg' }, toolSummary(ev.tool, ev.input)),
+    toggle);
+  head.addEventListener('click', () => {
+    if (!out.textContent) return;
+    const open = out.style.display !== 'none';
+    out.style.display = open ? 'none' : 'block';
+    toggle.textContent = open ? '▸' : '▾';
+  });
+  const card = el('div', { class: 'tool-call' }, head, out);
+  return {
+    el: card,
+    setOutput(text, isError) {
+      const t = String(text || '');
+      out.textContent = t.length > 8000 ? t.slice(0, 8000) + '\n…(truncated)' : t;
+      out.style.display = t ? 'block' : 'none';
+      toggle.textContent = t ? '▾' : '';
+      if (isError) card.classList.add('err');
+    },
+  };
+}
+
+async function streamContinue(projectId, sessionId, prompt, stream, status, body, btn, write, onSession, onStatus) {
   const st = (s) => { if (onStatus) onStatus(s); };
   const restore = () => { btn.disabled = false; btn.textContent = sessionId ? '▶ Continue' : '▶ Start'; };
   const gated = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Bash']);
+  const cards = {}; // tool_use id -> card
+  let curText = null;
+  const addText = (t) => {
+    if (!curText) { curText = el('div', { class: 'cb-text' }); stream.append(curText); }
+    curText.textContent += (curText.textContent ? '\n\n' : '') + t;
+  };
   try {
     const res = await fetch('/api/query', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ project: projectId, session: sessionId, prompt, write: !!write }) });
-    if (!res.ok) { const e = await res.json().catch(() => ({})); status.textContent = '✕ ' + (e.error || res.status); restore(); return; }
+    if (!res.ok) { const e = await res.json().catch(() => ({})); status.textContent = '✕ ' + (e.error || res.status); st('error'); restore(); return; }
     const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = '';
     while (true) {
       const { done, value } = await reader.read();
@@ -853,8 +902,16 @@ async function streamContinue(projectId, sessionId, prompt, textEl, status, body
         if (!line.trim()) continue;
         let ev; try { ev = JSON.parse(line); } catch { continue; }
         if (ev.type === 'started') { status.textContent = '🤖 thinking…'; st('running'); if (ev.sessionId && onSession) onSession(ev.sessionId); }
-        else if (ev.type === 'tool') { const awaiting = write && gated.has(ev.tool); status.textContent = (awaiting ? '⏳ awaiting approval — ' : '🔧 ') + ev.tool; st(awaiting ? 'awaiting' : 'running'); }
-        else if (ev.type === 'text') { acc += (acc ? '\n\n' : '') + ev.text; textEl.textContent = acc; st('running'); }
+        else if (ev.type === 'tool') {
+          curText = null;
+          const awaiting = write && gated.has(ev.tool);
+          const c = toolCard(ev); stream.append(c.el); if (ev.id) cards[ev.id] = c;
+          status.textContent = (awaiting ? '⏳ awaiting approval — ' : '🔧 running ') + ev.tool;
+          st(awaiting ? 'awaiting' : 'running');
+        }
+        else if (ev.type === 'tool_result') { const c = cards[ev.id]; if (c) c.setOutput(ev.output, ev.isError); st('running'); }
+        else if (ev.type === 'text') { addText(ev.text); st('running'); }
+        else if (ev.type === 'stderr') { /* surfaced via the tool result/output */ }
         else if (ev.type === 'done') { status.textContent = ev.error ? '✕ failed' : `✓ done${ev.cost != null ? ` · API-equiv $${ev.cost.toFixed(4)}` : ''}`; st(ev.error ? 'error' : 'done'); }
         body.scrollTop = body.scrollHeight;
       }
@@ -902,12 +959,12 @@ function buildBenchSession(project, write) {
     if (body.querySelector('.empty')) body.innerHTML = '';
     body.append(chatBubble({ role: 'user', text: prompt }));
     const ans = el('div', { class: 'chat-msg cb-assistant' });
-    const textEl = el('div', { class: 'cb-text' });
+    const streamEl = el('div', { class: 'cb-stream' });
     const status = el('div', { class: 'cb-status' }, '⏳ launching…');
-    ans.append(textEl, status); body.append(ans); body.scrollTop = body.scrollHeight;
+    ans.append(streamEl, status); body.append(ans); body.scrollTop = body.scrollHeight;
     ta.value = ''; btn.disabled = true; btn.textContent = '…';
     setBenchStatus(sess, 'running');
-    streamContinue(project.id, sess.curSession, prompt, textEl, status, body, btn, sess.write,
+    streamContinue(project.id, sess.curSession, prompt, streamEl, status, body, btn, sess.write,
       (sid) => { sess.curSession = sid; }, (st) => setBenchStatus(sess, st));
   }
   b.sessions.push(sess);
@@ -1405,6 +1462,9 @@ async function renderSettings() {
 
   v.append(await inviteCard());
 
+  const mc = await machinesCard();
+  if (mc) v.append(mc);
+
   const gh = await api('/api/gh-status');
   v.append(scaffoldCard(gh));
 
@@ -1444,6 +1504,64 @@ async function removeCustomApp(id) {
     body: JSON.stringify({ action: 'remove', id }) });
   await refresh();
   renderSettings();
+}
+
+// ---- machines card (broker only) -------------------------------------------
+async function machinesCard() {
+  let r; try { r = await api('/api/machines'); } catch { r = null; }
+  if (!r || !r.ok || !Array.isArray(r.machines)) return null; // local agent → no card
+  state.machines = r.machines;
+  const list = el('div', { id: 'machineList', style: 'margin-top:6px' });
+  const out = el('div', { id: 'connectOut', style: 'margin-top:12px' });
+  const renderList = (ms) => {
+    list.innerHTML = '';
+    if (!ms.length) { list.append(el('div', { class: 'empty' }, 'No machines yet. Add one below.')); return; }
+    for (const m of ms) {
+      list.append(el('div', { class: 'rule' },
+        el('span', {},
+          el('span', { class: m.connected ? 'chip-dot' : 'chip-dot off' }), '  ', m.name,
+          m.connected ? null : el('span', { style: 'color:var(--muted);font-size:11px;margin-left:8px' }, 'offline'),
+          m.agentId === state.machineId ? el('span', { style: 'color:var(--neon2);font-size:11px;margin-left:8px' }, 'viewing') : null),
+        el('span', {},
+          el('button', { class: 'rm', title: 'Rename', onclick: () => renameMachine(m, renderList) }, '✎'),
+          el('button', { class: 'rm', title: 'Remove', onclick: () => removeMachine(m, renderList) }, '✕'))));
+    }
+  };
+  renderList(r.machines);
+  return el('div', { class: 'card fade-in', style: 'max-width:640px;margin-top:18px' },
+    el('div', { class: 'card-title' }, 'Your machines'),
+    el('p', { style: 'color:var(--muted);font-size:13px;margin-bottom:6px;line-height:1.6' },
+      'Each machine runs the Vibe Center agent and bridges to your account. Add as many as you like — switch between them from the sidebar.'),
+    list,
+    el('button', { class: 'btn', style: 'margin-top:14px', onclick: () => addMachine(out, renderList) }, '+ Add a machine'),
+    out);
+}
+async function addMachine(out, renderList) {
+  const name = (prompt('Name this machine (e.g. "Laptop", "Work desktop")', 'New machine') || '').trim();
+  if (!name) return;
+  const r = await api('/api/machines', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+  if (!r || !r.ok) { out.textContent = 'Could not create the machine.'; return; }
+  const fresh = await api('/api/machines'); state.machines = fresh.machines; renderList(fresh.machines); renderMachineSwitcher();
+  out.innerHTML = '';
+  out.append(el('div', { style: 'color:var(--muted);font-size:13px;line-height:1.7' },
+    'On ', el('strong', {}, r.name), ', start the agent (', el('code', {}, 'npm start'), '), then run the bridge with this one-time token:',
+    el('div', { style: 'margin:10px 0;padding:12px 14px;background:rgba(0,0,0,.3);border-radius:10px;font-family:monospace;color:var(--neon2);word-break:break-all' },
+      'node broker/connect.mjs ' + r.token),
+    el('div', { style: 'color:var(--warn);font-size:12px' }, 'Copy it now — the token is shown only once.')));
+}
+async function renameMachine(m, renderList) {
+  const name = (prompt('Rename machine', m.name) || '').trim();
+  if (!name) return;
+  await api('/api/machines/rename', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agentId: m.agentId, name }) });
+  const fresh = await api('/api/machines'); state.machines = fresh.machines; renderList(fresh.machines); renderMachineSwitcher();
+}
+async function removeMachine(m, renderList) {
+  if (!confirm(`Remove "${m.name}"? Its pairing token stops working and it disconnects.`)) return;
+  await api('/api/machines/remove', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agentId: m.agentId }) });
+  if (state.machineId === m.agentId) state.machineId = null;
+  const fresh = await api('/api/machines'); state.machines = fresh.machines;
+  if (!state.machineId) { const c = fresh.machines.find((x) => x.connected) || fresh.machines[0]; state.machineId = c ? c.agentId : null; }
+  renderList(fresh.machines); renderMachineSwitcher();
 }
 
 async function saveToken() {
@@ -1521,6 +1639,38 @@ async function checkForUpdate() {
   } catch { /* server blip */ }
 }
 
+// ---- machines (one account, many computers) --------------------------------
+// Only meaningful behind the broker; the local agent answers /api/machines with
+// a 404 ('unknown endpoint'), which we treat as "single local machine".
+async function loadMachines() {
+  let r; try { r = await api('/api/machines'); } catch { r = null; }
+  if (!r || !r.ok || !Array.isArray(r.machines)) { state.machines = null; state.machineId = null; renderMachineSwitcher(); return; }
+  state.machines = r.machines;
+  const ids = r.machines.map((m) => m.agentId);
+  if (!state.machineId || !ids.includes(state.machineId)) {
+    const conn = r.machines.find((m) => m.connected);
+    state.machineId = (conn || r.machines[0] || {}).agentId || null;
+  }
+  renderMachineSwitcher();
+}
+function renderMachineSwitcher() {
+  const old = $('#machineRow'); if (old) old.remove();
+  // Hide the picker when there's nothing to switch between (local or single machine).
+  if (!state.machines || state.machines.length < 2) return;
+  const sel = el('select', { class: 'machine-select', onchange: (e) => switchMachine(e.target.value) },
+    ...state.machines.map((m) => el('option', { value: m.agentId }, (m.connected ? '● ' : '○ ') + m.name)));
+  sel.value = state.machineId || '';
+  const row = el('div', { id: 'machineRow', class: 'machine-row' }, el('span', { class: 'machine-label' }, 'Machine'), sel);
+  const foot = $('.sidebar-footer');
+  if (foot) foot.insertAdjacentElement('beforebegin', row);
+}
+function switchMachine(agentId) {
+  if (agentId === state.machineId) return;
+  state.machineId = agentId;
+  refresh();
+  if (state.view) navView(state.view);
+}
+
 // ---- auth gate -------------------------------------------------------------
 function closeAuthGate() { const g = $('#authGate'); if (g) g.remove(); }
 function lockApp() {
@@ -1589,6 +1739,7 @@ async function boot() {
   try { status = await api('/api/auth/status'); } catch { status = { hasUsers: false, user: null }; }
   if (!status.user) { renderAuthGate(status); return; }
   setOwnerFooter(status.user);
+  await loadMachines();
   await refresh();
   navView('overview');
   clearInterval(state.refreshTimer); state.refreshTimer = setInterval(refresh, 5000);

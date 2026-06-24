@@ -209,7 +209,8 @@ svg { display: block; width: 100%; overflow: visible; }
 .chip.gh { background: rgba(124,92,255,0.16); color: #b9a8ff; }
 .chip.local { background: rgba(255,194,75,0.14); color: var(--warn); }
 .chip.dim { background: rgba(255,255,255,0.05); color: var(--dim); }
-.chip-dot { width:6px; height:6px; border-radius:50%; background: var(--good); animation: ping 1.6s infinite; }
+.chip-dot { width:6px; height:6px; border-radius:50%; background: var(--good); animation: ping 1.6s infinite; display:inline-block; }
+.chip-dot.off { background: var(--muted); animation: none; }
 
 /* ---- approvals / sessions feed ---- */
 .feed { display: flex; flex-direction: column; gap: 8px; }
@@ -323,6 +324,17 @@ input:focus { border-color: var(--neon); box-shadow: 0 0 0 3px rgba(124,92,255,0
 .cb-tools { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .cb-tool { font-size: 10.5px; padding: 2px 8px; border-radius: 7px; background: rgba(24,224,216,.12); color: var(--neon2); }
 .cb-status { font-size: 11px; color: var(--neon2); margin-top: 8px; }
+.cb-stream { display: flex; flex-direction: column; gap: 8px; }
+/* Claude-Code-style tool call: ⏺ Tool(args) + collapsible output */
+.tool-call { border-left: 2px solid rgba(124,92,255,.5); padding-left: 10px; }
+.tool-call.err { border-left-color: var(--bad); }
+.tc-head { display: flex; align-items: baseline; gap: 7px; cursor: pointer; font-size: 12.5px; }
+.tc-mark { color: var(--neon); font-size: 11px; }
+.tc-name { font-weight: 700; color: var(--text); }
+.tc-arg { color: var(--muted); font-family: 'Cascadia Code', 'Consolas', monospace; font-size: 11.5px; word-break: break-all; flex: 1; }
+.tc-toggle { color: var(--dim); font-size: 10px; }
+.tc-out { margin-top: 6px; padding: 9px 11px; background: rgba(0,0,0,.32); border-radius: 8px; font-family: 'Cascadia Code', 'Consolas', monospace; font-size: 11.5px; line-height: 1.5; color: var(--muted); white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow: auto; }
+.tool-call.err .tc-out { color: #ffb4bb; }
 .chat-input { padding: 14px 18px; border-top: 1px solid var(--glass-brd); }
 .session-row.clickable { cursor: pointer; }
 .session-row.clickable:hover { background: rgba(124,92,255,.10); }
@@ -354,6 +366,10 @@ input:focus { border-color: var(--neon); box-shadow: 0 0 0 3px rgba(124,92,255,0
 .owner-email { font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .owner-logout { background: rgba(255,255,255,.06); border: 1px solid var(--glass-brd); color: var(--muted); font-size: 11px; padding: 4px 10px; border-radius: 8px; cursor: pointer; flex-shrink: 0; }
 .owner-logout:hover { background: rgba(255,93,108,.18); color: var(--bad); }
+.machine-row { display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-top: 1px solid var(--glass-brd); }
+.machine-label { font-size: 11px; color: var(--muted); flex-shrink: 0; text-transform: uppercase; letter-spacing: .04em; }
+.machine-select { flex: 1; min-width: 0; background: rgba(255,255,255,.06); border: 1px solid var(--glass-brd); color: var(--text); font-size: 12px; padding: 5px 8px; border-radius: 8px; cursor: pointer; }
+.machine-select:focus { outline: none; border-color: var(--neon2); }
 
 /* ---- workbench (multi-session: rail + focused conversation) ---- */
 .bench-shell { display: flex; gap: 16px; height: calc(100vh - 132px); min-height: 520px; }
