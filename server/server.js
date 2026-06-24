@@ -8,6 +8,7 @@ import { githubFor, repoMetrics } from './github.js';
 import { approvalsSummary, addRule, removeRule } from './approvals.js';
 import { getCustomApps, addApp, removeApp, syntheticProjects } from './apps.js';
 import { ghStatus, projectsRoot, scaffoldProject } from './scaffold.js';
+import { hasUsers, registerUser, verifyLogin, createSession, destroySession, userForToken } from './auth.js';
 import { runQuery } from './claude.js';
 import { prettyModel, costFor } from './pricing.js';
 
@@ -33,6 +34,29 @@ function writeConfig(cfg) {
 function githubToken() {
   return process.env.GITHUB_TOKEN || readConfig().githubToken || null;
 }
+
+// ---- auth helpers -----------------------------------------------------------
+function parseCookies(req) {
+  const out = {};
+  for (const part of (req.headers.cookie || '').split(';')) {
+    const i = part.indexOf('=');
+    if (i > 0) out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+  }
+  return out;
+}
+function currentUser(req) { return userForToken(parseCookies(req)['cc_session']); }
+function setSessionCookie(res, token) {
+  res.setHeader('Set-Cookie', `cc_session=${token}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${30 * 24 * 3600}`);
+}
+function clearSessionCookie(res) {
+  res.setHeader('Set-Cookie', 'cc_session=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0');
+}
+// Endpoints reachable without a session: auth itself, health, and the local
+// gateway hook (loopback-only, has no user session of its own).
+const AUTH_EXEMPT = new Set([
+  '/api/auth/status', '/api/auth/login', '/api/auth/register', '/api/auth/logout',
+  '/api/health', '/api/approval-request', '/api/approval-poll',
+]);
 
 // ---- approval gateway state -------------------------------------------------
 // In-memory queue of tool calls awaiting a dashboard decision. The blocking
@@ -264,6 +288,32 @@ function accountPayload() {
 }
 
 async function handleApi(req, res, pathname) {
+  // ---- auth ----
+  if (pathname === '/api/auth/status') {
+    return sendJson(res, 200, { hasUsers: hasUsers(), user: currentUser(req) });
+  }
+  if (pathname === '/api/auth/register' && req.method === 'POST') {
+    // One owner per agent for now; multi-user signup happens at the broker later.
+    if (hasUsers()) return sendJson(res, 403, { error: 'This agent already has an owner. Log in instead.' });
+    const body = await readBody(req);
+    const r = registerUser(body.email, body.password);
+    if (!r.ok) return sendJson(res, 400, r);
+    setSessionCookie(res, createSession(r.user.id));
+    return sendJson(res, 200, { ok: true, user: r.user });
+  }
+  if (pathname === '/api/auth/login' && req.method === 'POST') {
+    const body = await readBody(req);
+    const u = verifyLogin(body.email, body.password);
+    if (!u) return sendJson(res, 401, { error: 'Wrong email or password.' });
+    setSessionCookie(res, createSession(u.id));
+    return sendJson(res, 200, { ok: true, user: u });
+  }
+  if (pathname === '/api/auth/logout' && req.method === 'POST') {
+    destroySession(parseCookies(req)['cc_session']);
+    clearSessionCookie(res);
+    return sendJson(res, 200, { ok: true });
+  }
+
   if (pathname === '/api/overview') {
     return sendJson(res, 200, overviewPayload(mergedProjects()));
   }
@@ -504,7 +554,14 @@ const server = http.createServer(async (req, res) => {
   const { pathname } = new URL(req.url, 'http://localhost');
   if (securityReject(req)) { res.writeHead(403, { 'Content-Type': 'text/plain' }); return res.end('forbidden'); }
   try {
-    if (pathname.startsWith('/api/')) return await handleApi(req, res, pathname);
+    if (pathname.startsWith('/api/')) {
+      // Once an owner account exists, every data/control endpoint needs a valid
+      // session (the SPA shell + auth/health/gateway-hook stay open).
+      if (hasUsers() && !AUTH_EXEMPT.has(pathname) && !currentUser(req)) {
+        return sendJson(res, 401, { error: 'Sign in required.' });
+      }
+      return await handleApi(req, res, pathname);
+    }
     return serveStatic(req, res, pathname);
   } catch (e) {
     sendJson(res, 500, { error: String(e && e.message || e) });

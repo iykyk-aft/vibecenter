@@ -44,6 +44,7 @@ function ago(ms) {
 
 async function api(path, opts) {
   const res = await fetch(path, opts);
+  if (res.status === 401 && !path.startsWith('/api/auth/')) lockApp();
   return res.json();
 }
 
@@ -1371,9 +1372,69 @@ async function checkForUpdate() {
   } catch { /* server blip */ }
 }
 
-document.querySelectorAll('.nav-item').forEach((b) => b.addEventListener('click', () => navView(b.dataset.view)));
+// ---- auth gate -------------------------------------------------------------
+function closeAuthGate() { const g = $('#authGate'); if (g) g.remove(); }
+function lockApp() {
+  if ($('#authGate')) return;
+  clearInterval(state.refreshTimer); clearInterval(state.updateTimer); clearInterval(state.approvalsTimer);
+  fetch('/api/auth/status').then((r) => r.json()).then(renderAuthGate).catch(() => renderAuthGate({ hasUsers: true }));
+}
+async function logout() {
+  await fetch('/api/auth/logout', { method: 'POST' });
+  location.reload();
+}
+function setOwnerFooter(user) {
+  const foot = $('.sidebar-footer');
+  if (!foot || $('#ownerRow')) return;
+  foot.insertAdjacentElement('beforebegin', el('div', { id: 'ownerRow', class: 'owner-row' },
+    el('span', { class: 'owner-email', title: user.email }, user.email),
+    el('button', { class: 'owner-logout', onclick: logout, title: 'Sign out' }, 'Sign out')));
+}
+function renderAuthGate(status) {
+  closeAuthGate();
+  const isRegister = !status.hasUsers;
+  const email = el('input', { type: 'email', class: 'q-input', placeholder: 'you@example.com', autocomplete: 'username' });
+  const pass = el('input', { type: 'password', class: 'q-input', placeholder: isRegister ? 'Choose a password (8+ characters)' : 'Password', autocomplete: isRegister ? 'new-password' : 'current-password' });
+  const msg = el('div', { class: 'auth-msg' });
+  const btn = el('button', { class: 'btn', style: 'width:100%;margin-top:14px', onclick: submit }, isRegister ? 'Create account' : 'Sign in');
+  pass.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+  const card = el('div', { class: 'auth-card' },
+    el('div', { class: 'auth-brand' }, '⚡'),
+    el('div', { class: 'auth-title' }, isRegister ? 'Create your account' : 'Welcome back'),
+    el('div', { class: 'auth-sub' }, isRegister
+      ? 'Set the owner login for this machine’s Vibe Center.'
+      : 'Sign in to your Vibe Center.'),
+    el('div', { class: 'field' },
+      el('label', {}, 'Email'), email,
+      el('label', { style: 'margin-top:10px' }, 'Password'), pass),
+    btn, msg);
+  const overlay = el('div', { class: 'auth-overlay', id: 'authGate' }, card);
+  document.body.append(overlay);
+  email.focus();
+  async function submit() {
+    if (!email.value.trim() || !pass.value) { msg.textContent = 'Enter your email and password.'; return; }
+    btn.disabled = true; btn.textContent = '…';
+    const r = await api('/api/auth/' + (isRegister ? 'register' : 'login'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email.value.trim(), password: pass.value }),
+    }).catch(() => ({ error: 'network error' }));
+    if (!r || !r.ok) { msg.textContent = '✕ ' + ((r && r.error) || 'Failed'); btn.disabled = false; btn.textContent = isRegister ? 'Create account' : 'Sign in'; return; }
+    closeAuthGate();
+    boot();
+  }
+}
 
-refresh().then(() => navView('overview'));
-state.refreshTimer = setInterval(refresh, 5000);
-checkForUpdate();
-state.updateTimer = setInterval(checkForUpdate, 4000);
+async function boot() {
+  let status;
+  try { status = await api('/api/auth/status'); } catch { status = { hasUsers: false, user: null }; }
+  if (!status.user) { renderAuthGate(status); return; }
+  setOwnerFooter(status.user);
+  await refresh();
+  navView('overview');
+  clearInterval(state.refreshTimer); state.refreshTimer = setInterval(refresh, 5000);
+  checkForUpdate();
+  clearInterval(state.updateTimer); state.updateTimer = setInterval(checkForUpdate, 4000);
+}
+
+document.querySelectorAll('.nav-item').forEach((b) => b.addEventListener('click', () => navView(b.dataset.view)));
+boot();
