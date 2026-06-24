@@ -1855,9 +1855,32 @@ Your data and Claude stay on your computer — Vibe Center just shows your dashb
     share, msg, list);
 }
 
+function isStandalone() { return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true; }
+function installButton() {
+  if (isStandalone()) return el('div', { class: 'guide-installed' }, '✓ Installed — you’re running the app.');
+  const btn = el('button', { class: 'btn', style: 'margin-top:12px' }, '📲 Install app');
+  btn.onclick = async () => {
+    if (deferredInstallPrompt) {
+      deferredInstallPrompt.prompt();
+      const choice = await deferredInstallPrompt.userChoice.catch(() => null);
+      deferredInstallPrompt = null;
+      btn.textContent = (choice && choice.outcome === 'accepted') ? '✓ Installing…' : '📲 Install app';
+    } else {
+      btn.textContent = '↑ Use your browser menu → Install / Add to Home Screen';
+      setTimeout(() => { btn.textContent = '📲 Install app'; }, 4000);
+    }
+  };
+  return btn;
+}
+
 function renderGuide() {
   $('#crumb').textContent = 'Guide';
   const v = $('#view'); v.innerHTML = '';
+  if (state.welcome) {
+    v.append(el('div', { class: 'card fade-in', style: 'margin-bottom:16px;border-color:var(--neon)' },
+      el('div', { class: 'card-title' }, '👋 Welcome to Vibe Center!'),
+      el('p', { class: 'guide-intro', style: 'margin:0' }, 'You’re all set up. Start with “Connect your computer” below — it’s a one-time step. Everything runs on your own machine; this dashboard just shows it.')));
+  }
   const origin = location.origin;
   const C = (t) => el('code', { class: 'guide-code' }, t);
   const section = (icon, title, intro, steps) => el('div', { class: 'card fade-in guide-card' },
@@ -1911,12 +1934,16 @@ function renderGuide() {
       'They sign up with the code, install the app, and connect their machine. Their data never leaves their computer.',
     ]),
 
-    section('📱', 'Install on your phone', 'Use it like a native app.', [
-      ['Open this site’s URL on your phone: ', C(origin)],
-      [el('b', {}, 'iPhone (Safari):'), ' Share → Add to Home Screen.'],
-      [el('b', {}, 'Android (Chrome):'), ' menu → Install app.'],
-      'It launches full-screen — approvals and metrics in your pocket.',
-    ]),
+    (() => {
+      const card = section('📱', 'Install on your phone', 'Use it like a native app.', [
+        ['Open this site’s URL on your phone: ', C(origin)],
+        [el('b', {}, 'iPhone (Safari):'), ' Share → Add to Home Screen.'],
+        [el('b', {}, 'Android (Chrome):'), ' menu → Install app, or tap below.'],
+        'It launches full-screen — approvals and metrics in your pocket.',
+      ]);
+      card.append(installButton());
+      return card;
+    })(),
 
     section('📊', 'Account & metrics', null, [
       'Account shows lifetime tokens, spend (or API-equivalent value on Max/Pro), cache savings, a usage heatmap, model trends, and budgets you can set in Settings.',
@@ -2419,6 +2446,7 @@ function renderAuthGate(status, mode) {
       body: JSON.stringify({ email: email.value.trim(), password: pass.value, invite: invite.value.trim() }),
     }).catch(() => ({ error: 'network error' }));
     if (!r || !r.ok) { msg.textContent = '✕ ' + ((r && r.error) || 'Failed'); btn.disabled = false; btn.textContent = isRegister ? 'Create account' : 'Sign in'; return; }
+    if (isRegister) { try { localStorage.setItem('cc.welcome', '1'); } catch { /* */ } } // brand-new account → show the Guide
     closeAuthGate();
     boot();
   }
@@ -2431,7 +2459,10 @@ async function boot() {
   setOwnerFooter(status.user);
   await loadMachines();
   await refresh();
-  navView('overview');
+  let firstRun = false;
+  try { if (localStorage.getItem('cc.welcome')) { localStorage.removeItem('cc.welcome'); firstRun = true; } } catch { /* */ }
+  state.welcome = firstRun;
+  navView(firstRun ? 'guide' : 'overview');
   clearInterval(state.refreshTimer); state.refreshTimer = setInterval(refresh, 5000);
   checkForUpdate();
   clearInterval(state.updateTimer); state.updateTimer = setInterval(checkForUpdate, 4000);
@@ -2458,6 +2489,11 @@ document.querySelectorAll('.nav-item').forEach((b) => b.addEventListener('click'
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => { /* not a secure context */ }));
 }
+
+// Capture the native install prompt so the Guide's "Install app" button can fire it.
+let deferredInstallPrompt = null;
+window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); deferredInstallPrompt = e; });
+window.addEventListener('appinstalled', () => { deferredInstallPrompt = null; });
 
 // Esc restores a maximized workbench pane back to its tiled layout. Skipped
 // when a modal is open so it doesn't fight the modal's own dismissal.

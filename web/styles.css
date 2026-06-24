@@ -268,6 +268,7 @@ select option { background: #14162a; color: var(--text); }
 .guide-steps li::marker { color: var(--neon); font-weight: 700; }
 .guide-code { font-family: 'Cascadia Code','Consolas',monospace; font-size: 12px; background: rgba(0,0,0,.32); color: var(--neon2); padding: 2px 7px; border-radius: 6px; word-break: break-all; }
 .guide-card a { color: var(--neon2); }
+.guide-installed { margin-top: 12px; font-size: 13px; color: var(--good); font-weight: 600; }
 
 /* ---- mobile / PWA ---- */
 .topbar-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
