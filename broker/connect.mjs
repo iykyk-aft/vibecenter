@@ -11,13 +11,15 @@ import path from 'node:path';
 import url from 'node:url';
 
 const ROOT = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '..');
-const BROKER = (process.env.BROKER_URL || 'http://localhost:7900').replace(/\/+$/, '');
-const AGENT = (process.env.AGENT_URL || 'http://localhost:7878').replace(/\/+$/, '');
+// Usage:  node broker/connect.mjs <PAIR_TOKEN> [BROKER_URL]
+// (broker URL can be the 2nd arg so invitees don't need env vars.)
 const TOKEN = process.env.PAIR_TOKEN || process.argv[2];
+const BROKER = (process.env.BROKER_URL || process.argv[3] || 'http://localhost:7900').replace(/\/+$/, '');
+const AGENT = (process.env.AGENT_URL || 'http://localhost:7878').replace(/\/+$/, '');
 let INTERNAL = '';
 try { INTERNAL = fs.readFileSync(path.join(ROOT, 'data', 'internal-token'), 'utf8').trim(); } catch { /* agent not started yet */ }
 
-if (!TOKEN) { console.error('Usage: node broker/connect.mjs <PAIR_TOKEN>   (get the token from the website → Connect your machine)'); process.exit(1); }
+if (!TOKEN) { console.error('Usage: node broker/connect.mjs <PAIR_TOKEN> [BROKER_URL]   (token from the website → Settings → Connect a machine)'); process.exit(1); }
 const libFor = (u) => (new URL(u).protocol === 'https:' ? https : http);
 
 function forward(msg) {

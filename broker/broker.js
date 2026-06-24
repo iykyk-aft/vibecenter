@@ -21,7 +21,9 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 
 // Keep the broker's accounts separate from any local agent's, then load auth.
 process.env.CC_AUTH_FILE = process.env.CC_AUTH_FILE || path.join(DATA_DIR, 'auth.json');
-const { hasUsers, registerUser, verifyLogin, createSession, destroySession, userForToken, createInvite, listInvites } = await import('../server/auth.js');
+const { hasUsers, registerUser, verifyLogin, createSession, destroySession, userForToken, createInvite, listInvites, inviteExists } = await import('../server/auth.js');
+const { makeZip, collectClientFiles } = await import('../server/zipper.js');
+let downloadZip = null; // built on first request, cached
 
 const PAIR_FILE = path.join(DATA_DIR, 'pairings.json');
 const readPairings = () => { try { return JSON.parse(fs.readFileSync(PAIR_FILE, 'utf8')); } catch { return {}; } };
@@ -91,6 +93,15 @@ const server = http.createServer(async (req, res) => {
       try { bres.writeHead(body.status || 200, body.headers || { 'Content-Type': 'application/json' }); bres.end(body.body != null ? body.body : ''); } catch { /* client gone */ }
     }
     return sendJson(res, 200, { ok: true });
+  }
+
+  // ---- invitee download: the app, gated by a valid invite code ----
+  if (pathname === '/download') {
+    if (!inviteExists(u.searchParams.get('invite'))) { res.writeHead(403, { 'Content-Type': 'text/plain' }); return res.end('A valid invite code is required to download Vibe Center.'); }
+    try { if (!downloadZip) downloadZip = makeZip(collectClientFiles(ROOT)); }
+    catch (e) { res.writeHead(500); return res.end('Could not build the download.'); }
+    res.writeHead(200, { 'Content-Type': 'application/zip', 'Content-Disposition': 'attachment; filename="vibecenter.zip"', 'Content-Length': downloadZip.length });
+    return res.end(downloadZip);
   }
 
   // ---- broker-local endpoints ----

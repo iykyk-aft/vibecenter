@@ -1811,21 +1811,48 @@ async function inviteCard() {
     }
   };
   render(data.invites || []);
+  const origin = location.origin;
+  const isPublic = !/^https?:\/\/(localhost|127\.0\.0\.1|\[?::1)/.test(origin);
+  const share = el('textarea', { class: 'q-input', rows: '11', readonly: 'readonly', style: 'width:100%;display:none;font-size:12px;margin-top:12px' });
   const msg = el('div', { style: 'font-size:12.5px;margin-top:10px;color:var(--good)' });
+  const inviteText = (code) =>
+`🎟️ You're invited to Vibe Center
+
+1) Download the app:
+   ${origin}/download?invite=${code}
+   Unzip it.  (No Node yet? Install it: https://nodejs.org)
+
+2) Sign up here with your invite code:
+   ${origin}
+   invite code:  ${code}
+
+3) Connect your computer — open a terminal in the unzipped folder and run:
+   npm start
+   (then, with the token from Settings → Connect a machine:)
+   node broker/connect.mjs YOUR_TOKEN ${origin}
+
+Your data and Claude stay on your computer — Vibe Center just shows your dashboard here.`;
+  const copyBtn = el('button', { class: 'btn ghost', style: 'margin-left:8px;display:none', onclick: async () => {
+    try { await navigator.clipboard.writeText(share.value); copyBtn.textContent = '✓ Copied'; setTimeout(() => (copyBtn.textContent = '📋 Copy invite'), 1500); } catch { share.select(); }
+  } }, '📋 Copy invite');
   return el('div', { class: 'card fade-in', style: 'max-width:640px;margin-top:18px' },
     el('div', { class: 'card-title' }, '🎟️ Invite Codes'),
     el('p', { style: 'color:var(--muted);font-size:13px;margin-bottom:12px;line-height:1.6' },
-      'New people need a valid invite code to sign up. Generate one and share it — each code works once.'),
-    el('button', { class: 'btn', onclick: async () => {
-      const r = await api('/api/auth/invite', { method: 'POST' });
-      if (r && r.ok) {
-        msg.textContent = '✓ New code: ' + r.code + '  (copied)';
-        try { await navigator.clipboard.writeText(r.code); } catch { /* clipboard may be blocked */ }
-        const fresh = await api('/api/auth/invite').catch(() => ({ invites: [] }));
-        render(fresh.invites || []);
-      }
-    } }, '+ Generate invite code'),
-    msg, list);
+      'Generate a single-use invite and send the whole packet — download link, code, and setup steps. ',
+      isPublic ? null : el('b', { style: 'color:var(--warn)' }, 'Tip: open your public URL and generate invites there, so the links work for others.')),
+    el('div', { style: 'display:flex;align-items:center;flex-wrap:wrap' },
+      el('button', { class: 'btn', onclick: async () => {
+        const r = await api('/api/auth/invite', { method: 'POST' });
+        if (r && r.ok) {
+          share.value = inviteText(r.code); share.style.display = 'block'; copyBtn.style.display = 'inline-block';
+          msg.textContent = '✓ Invite ready — copy & send it.';
+          try { await navigator.clipboard.writeText(share.value); } catch { /* */ }
+          const fresh = await api('/api/auth/invite').catch(() => ({ invites: [] }));
+          render(fresh.invites || []);
+        }
+      } }, '+ Generate invite'),
+      copyBtn),
+    share, msg, list);
 }
 
 async function renderSettings() {

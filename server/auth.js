@@ -62,6 +62,10 @@ export function createInvite(byUserId) {
 export function listInvites() {
   return read().invites.map((i) => ({ code: i.code, used: !!i.usedBy, createdAt: i.createdAt }));
 }
+export function inviteExists(code) {
+  const c = String(code || '').trim().toUpperCase();
+  return !!c && read().invites.some((i) => i.code === c);
+}
 
 export function verifyLogin(email, password) {
   email = String(email || '').trim().toLowerCase();
