@@ -433,7 +433,8 @@ function renderOverview(data) {
     el('div', { class: 'app-meta' }, `${fmtNum(p.billableTokens)} tok`),
     el('div', { class: 'app-meta' }, ago(p.lastActivity))));
   const table = el('div', { class: 'card fade-in' },
-    el('div', { class: 'card-title' }, 'Applications', el('span', { class: 'muted' }, 'click to open')),
+    el('div', { class: 'card-title' }, 'Applications', el('span', { class: 'muted' }, 'click to open'),
+      el('button', { class: 'btn', style: 'margin-left:auto;padding:6px 13px;font-size:12px', onclick: () => openAddAppModal() }, '+ Add app')),
     el('div', { class: 'app-list' }, ...rows));
   v.append(table);
 }
@@ -775,6 +776,83 @@ function chatBubble(m) {
   return wrap;
 }
 function closeModal() { if (state.modal) { state.modal.remove(); state.modal = null; } }
+
+// Add-application popup — create a new project or register an existing one,
+// from anywhere (no need to dig into Settings).
+async function openAddAppModal(initialTab) {
+  closeModal();
+  const gh = await api('/api/gh-status').catch(() => ({ installed: false, authed: false }));
+  let tab = initialTab || 'new';
+  const overlay = el('div', { class: 'modal-overlay', onclick: (e) => { if (e.target === overlay) closeModal(); } });
+  const tabs = el('div', { class: 'addapp-seg' });
+  const body = el('div', { class: 'addapp-body' });
+  const mk = (id, label) => el('button', { class: 'addapp-tab' + (tab === id ? ' active' : ''), onclick: () => { tab = id; paint(); } }, label);
+  function paint() {
+    tabs.replaceChildren(mk('new', '✨ New project'), mk('existing', '📂 Add existing'));
+    body.replaceChildren(tab === 'new' ? newForm() : existingForm());
+  }
+  const modal = el('div', { class: 'modal', style: 'width:min(560px,100%);height:auto;max-height:90vh' },
+    el('div', { class: 'modal-head' },
+      el('div', { class: 'modal-title' }, '➕ Add application'),
+      el('button', { class: 'modal-x', onclick: closeModal }, '✕')),
+    tabs, body);
+  overlay.append(modal);
+  document.body.append(overlay);
+  state.modal = overlay;
+  paint();
+
+  function ghLine() {
+    if (!gh.installed) return el('div', { class: 'addapp-gh warn' }, '○ GitHub CLI not installed — creates a local folder only');
+    if (!gh.authed) return el('div', { class: 'addapp-gh warn' }, '○ GitHub CLI installed but signed out — run “gh auth login”');
+    return el('div', { class: 'addapp-gh good' }, `● GitHub ready — repos created under github.com/${gh.user}`);
+  }
+  function newForm() {
+    const canRepo = gh.installed && gh.authed;
+    const name = el('input', { type: 'text', placeholder: 'my-new-app' });
+    const repo = el('input', { type: 'checkbox', ...(canRepo ? { checked: 'checked' } : { disabled: 'disabled' }) });
+    const vis = el('select', {}, el('option', { value: 'private' }, 'Private'), el('option', { value: 'public' }, 'Public'));
+    const msg = el('div', { class: 'addapp-msg' });
+    const btn = el('button', { class: 'btn', style: 'width:100%;margin-top:8px' }, '✨ Create & open session');
+    btn.onclick = async () => {
+      const nm = name.value.trim();
+      if (!nm) { msg.className = 'addapp-msg err'; msg.textContent = 'Enter a project name.'; return; }
+      msg.className = 'addapp-msg'; msg.textContent = '⏳ creating' + (repo.checked ? ' folder + GitHub repo…' : ' folder…'); btn.disabled = true;
+      const r = await api('/api/scaffold', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: nm, createRepo: repo.checked, visibility: vis.value }) }).catch(() => ({ ok: false, error: 'network error' }));
+      if (!r || !r.ok) { msg.className = 'addapp-msg err'; msg.textContent = '✕ ' + ((r && r.error) || 'failed'); btn.disabled = false; return; }
+      closeModal();
+      await refresh();
+      if (r.projectId) { navProject(r.projectId); openSessionChat(r.projectId, null, nm, { write: true, intro: `Fresh project at ${r.path}. Describe what you want to build and I'll start — edits pause for your approval.` }); }
+    };
+    name.addEventListener('keydown', (e) => { if (e.key === 'Enter') btn.click(); });
+    return el('div', { class: 'addapp-form' },
+      el('p', { class: 'addapp-hint' }, 'Creates a folder under ', el('code', {}, gh.projectsRoot || '~/claude-projects'), ', runs git init, optionally a GitHub repo, then opens a writeable session.'),
+      el('label', {}, 'Project name'), name,
+      el('label', { class: 'addapp-check' }, repo, ' Create a GitHub repo'),
+      el('label', {}, 'Visibility'), vis,
+      btn, msg, ghLine());
+  }
+  function existingForm() {
+    const name = el('input', { type: 'text', placeholder: 'My App' });
+    const pth = el('input', { type: 'text', placeholder: 'C:\\Users\\Jameson\\my-app' });
+    const ghUrl = el('input', { type: 'text', placeholder: 'https://github.com/you/repo' });
+    const msg = el('div', { class: 'addapp-msg' });
+    const btn = el('button', { class: 'btn', style: 'width:100%;margin-top:8px' }, '+ Add application');
+    btn.onclick = async () => {
+      msg.className = 'addapp-msg'; msg.textContent = ''; btn.disabled = true;
+      const r = await api('/api/apps', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'add', name: name.value.trim(), path: pth.value.trim(), github: ghUrl.value.trim() }) }).catch(() => ({ ok: false, error: 'network error' }));
+      if (!r || !r.ok) { msg.className = 'addapp-msg err'; msg.textContent = (r && r.error) || 'Could not add'; btn.disabled = false; return; }
+      closeModal();
+      await refresh();
+      if (r.id) navProject(r.id);
+    };
+    return el('div', { class: 'addapp-form' },
+      el('p', { class: 'addapp-hint' }, 'Track an app you already have. Add a local folder (to run Claude in it) and/or a GitHub repo (for metrics).'),
+      el('label', {}, 'Name (optional)'), name,
+      el('label', {}, 'Local folder path (optional)'), pth,
+      el('label', {}, 'GitHub URL (optional)'), ghUrl,
+      btn, msg);
+  }
+}
 
 function openSessionChat(projectId, sessionId, title, opts = {}) {
   closeModal();
@@ -2082,7 +2160,7 @@ function navProject(id) {
 function buildProjectNav(projects) {
   const nav = $('#projectNav');
   nav.innerHTML = '';
-  nav.append(el('button', { class: 'project-item', style: 'color:var(--neon2)', onclick: () => navView('settings') },
+  nav.append(el('button', { class: 'project-item', style: 'color:var(--neon2)', onclick: () => openAddAppModal() },
     el('span', { class: 'pi-name' }, '＋ Add application')));
   for (const p of projects) {
     const item = el('button', { class: 'project-item', 'data-id': p.id, onclick: () => navProject(p.id) },

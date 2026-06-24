@@ -346,6 +346,24 @@ select option { background: #14162a; color: var(--text); }
 .cb-tool { font-size: 10.5px; padding: 2px 8px; border-radius: 7px; background: rgba(24,224,216,.12); color: var(--neon2); }
 .cb-status { font-size: 11px; color: var(--dim); margin-top: 10px; font-variant-numeric: tabular-nums; }
 .cb-stream { display: flex; flex-direction: column; gap: 10px; }
+/* ---- add-application popup ---- */
+.addapp-seg { display: flex; gap: 8px; padding: 14px 20px 0; }
+.addapp-tab { flex: 1; padding: 10px; border-radius: 10px; background: rgba(255,255,255,.04); border: 1px solid var(--glass-brd); color: var(--muted); cursor: pointer; font-size: 13px; font-weight: 600; }
+.addapp-tab.active { background: rgba(124,92,255,.16); border-color: var(--neon); color: #fff; }
+.addapp-body { padding: 18px 20px 22px; overflow-y: auto; }
+.addapp-form { display: flex; flex-direction: column; gap: 7px; }
+.addapp-form label { font-size: 12px; color: var(--muted); margin-top: 6px; }
+.addapp-form input[type=text], .addapp-form select { width: 100%; }
+.addapp-check { display: flex; align-items: center; gap: 8px; font-size: 13px !important; color: var(--text) !important; cursor: pointer; }
+.addapp-check input { width: auto; }
+.addapp-hint { font-size: 12.5px; color: var(--muted); line-height: 1.6; margin-bottom: 6px; }
+.addapp-hint code { color: var(--neon2); font-size: 11.5px; }
+.addapp-msg { font-size: 12.5px; margin-top: 10px; color: var(--good); min-height: 16px; }
+.addapp-msg.err { color: var(--bad); }
+.addapp-gh { font-size: 12px; margin-top: 10px; }
+.addapp-gh.good { color: var(--good); }
+.addapp-gh.warn { color: var(--warn); }
+
 /* ---- update / restart banner ---- */
 .update-bar { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); z-index: 95; display: flex; align-items: center; gap: 14px; padding: 9px 12px 9px 18px; background: linear-gradient(180deg, rgba(26,28,50,.98), rgba(14,15,28,.99)); border: 1px solid var(--neon); border-radius: 12px; box-shadow: 0 14px 44px rgba(0,0,0,.55); font-size: 13px; font-weight: 500; animation: toastIn .25s ease; }
 .update-x { background: rgba(255,255,255,.06); border: none; color: var(--muted); width: 26px; height: 26px; border-radius: 8px; cursor: pointer; font-size: 12px; }
