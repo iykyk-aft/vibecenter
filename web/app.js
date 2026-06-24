@@ -1019,14 +1019,25 @@ function buildBenchSession(project, write, saved) {
     maxBtn.title = on ? 'Restore' : 'Maximize';
     maxBtn.classList.toggle('on', !!on);
   };
+  // Per-workspace approval mode, right in the session header.
+  const apprBtn = el('button', { class: 'mode-toggle', onclick: () => toggleSessApproval(sess) });
+  sess.syncApproval = () => {
+    const locked = !!(state.gateway && state.gateway.autoAll);
+    const auto = locked || gwModeFor(project.cwd) === 'auto';
+    apprBtn.textContent = auto ? '🛡️ Auto-approve' : '🛡️ Ask each';
+    apprBtn.className = 'mode-toggle' + (auto ? ' write' : '');
+    apprBtn.disabled = locked;
+    apprBtn.title = locked ? 'Global “Always allow everything” is ON (Approvals screen)' : 'Toggle always-allow for this workspace';
+  };
   const pane = el('div', { class: 'bench-pane' },
     el('div', { class: 'bench-head' },
       el('span', { class: 'bench-title', title: project.cwd || project.name }, project.name),
-      el('div', { style: 'display:flex;gap:8px;align-items:center' }, toggle, maxBtn,
+      el('div', { style: 'display:flex;gap:8px;align-items:center' }, toggle, apprBtn, maxBtn,
         el('button', { class: 'modal-x', style: 'width:28px;height:28px', title: 'Close session', onclick: () => closeBenchSession(sess.id) }, '✕'))),
     body,
     el('div', { class: 'bench-input' }, el('div', { class: 'q-bar' }, ta, stopBtn, btn)));
   sess.paneEl = pane; sess.bodyEl = body; sess.taEl = ta;
+  sess.syncApproval();
   function stop() { if (sess.abort) { try { sess.abort.abort(); } catch { /* */ } } }
   function send() {
     const prompt = ta.value.trim();
@@ -1048,13 +1059,34 @@ function buildBenchSession(project, write, saved) {
   saveBench();
   return sess;
 }
+// Effective approval mode for a workspace from the cached gateway state
+// (matches the server's case/slash-insensitive path comparison).
+function gwModeFor(cwd) {
+  const g = state.gateway || {};
+  if (g.autoAll) return 'auto';
+  const norm = (p) => String(p || '').toLowerCase().replace(/[\\/]+/g, '/').replace(/\/+$/, '');
+  const key = norm(cwd);
+  for (const k in (g.projectMode || {})) if (norm(k) === key) return g.projectMode[k];
+  return 'manual';
+}
+function syncBenchApprovals() { for (const s of (state.bench && state.bench.sessions) || []) if (s.syncApproval) s.syncApproval(); }
+async function toggleSessApproval(sess) {
+  if (state.gateway && state.gateway.autoAll) return; // global override wins
+  const next = gwModeFor(sess.project.cwd) === 'auto' ? 'manual' : 'auto';
+  await setGateway({ project: sess.project.cwd, mode: next });
+  try { state.gateway = await api('/api/gateway'); } catch { /* */ }
+  syncBenchApprovals();
+}
+
 function setBenchStatus(sess, status) {
-  const changed = sess.status !== status;
-  sess.status = status;
+  const wasUnread = sess.unread;
   if (state.bench.activeId !== sess.id && (status === 'awaiting' || status === 'done' || status === 'error')) sess.unread = true;
+  const changed = sess.status !== status || sess.unread !== wasUnread;
+  sess.status = status;
   if (sess.syncStop) sess.syncStop();
-  refreshRail();
-  if (changed) saveBench(); // dedupe the running→running stream spam
+  // Only touch the DOM / storage when something visible changed — streaming fires
+  // this on every token, and rebuilding the rail each time was the main UI lag.
+  if (changed) { refreshRail(); saveBench(); }
 }
 function closeBenchSession(id) {
   const b = ensureBench();
@@ -1213,6 +1245,7 @@ function renderWorkbench() {
   const v = $('#view'); v.innerHTML = '';
   const b = ensureBench();
   if (!b.activeId && b.sessions.length) b.activeId = b.sessions[0].id;
+  api('/api/gateway').then((g) => { state.gateway = g; syncBenchApprovals(); }).catch(() => {});
   const railList = el('div', { class: 'bench-rail-list' });
   const newHost = el('div', { class: 'bench-newform' });
   const toggleNew = () => { newHost.replaceChildren(newHost.childElementCount ? '' : newSessionForm()); };

@@ -317,16 +317,21 @@ input:focus { border-color: var(--neon); box-shadow: 0 0 0 3px rgba(124,92,255,0
 .modal-title { font-weight: 700; font-size: 15px; }
 .modal-x { background: rgba(255,255,255,.06); border: none; color: var(--muted); width: 30px; height: 30px; border-radius: 9px; cursor: pointer; font-size: 14px; }
 .modal-x:hover { background: rgba(255,93,108,.2); color: var(--bad); }
-.chat-body { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 12px; }
-.chat-msg { max-width: 86%; padding: 11px 15px; border-radius: 14px; font-size: 13.5px; line-height: 1.6; }
-.cb-user { align-self: flex-end; background: linear-gradient(135deg, rgba(124,92,255,.32), rgba(124,92,255,.16)); border: 1px solid rgba(124,92,255,.3); border-bottom-right-radius: 4px; }
-.cb-assistant { align-self: flex-start; background: rgba(255,255,255,.04); border: 1px solid var(--glass-brd); border-bottom-left-radius: 4px; }
+/* Clean, document-style transcript (à la the VS Code Claude chat): full-width
+   turns with a small role label, no heavy bubbles. */
+.chat-body { flex: 1; overflow-y: auto; padding: 18px 22px; display: flex; flex-direction: column; gap: 20px; }
+.chat-msg { max-width: 100%; font-size: 13.5px; line-height: 1.72; border: none; background: none; padding: 0; }
+.chat-msg::before { display: block; font-size: 10px; letter-spacing: 1.2px; text-transform: uppercase; font-weight: 700; margin-bottom: 7px; }
+.cb-user::before { content: 'You'; color: var(--neon); }
+.cb-assistant::before { content: 'Claude'; color: var(--neon2); }
+.cb-user { background: rgba(124,92,255,.07); border: 1px solid rgba(124,92,255,.16); border-radius: 12px; padding: 12px 15px; }
+.cb-assistant { padding-left: 1px; }
 .cb-text { white-space: pre-wrap; word-break: break-word; }
 .cb-text.muted { color: var(--dim); }
 .cb-tools { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .cb-tool { font-size: 10.5px; padding: 2px 8px; border-radius: 7px; background: rgba(24,224,216,.12); color: var(--neon2); }
-.cb-status { font-size: 11px; color: var(--neon2); margin-top: 8px; }
-.cb-stream { display: flex; flex-direction: column; gap: 8px; }
+.cb-status { font-size: 11px; color: var(--dim); margin-top: 10px; font-variant-numeric: tabular-nums; }
+.cb-stream { display: flex; flex-direction: column; gap: 10px; }
 /* ---- in-app approval prompts ---- */
 .approval-dock { position: fixed; right: 20px; bottom: 20px; z-index: 90; display: flex; flex-direction: column; gap: 12px; width: min(380px, calc(100vw - 40px)); }
 .approval-toast { background: linear-gradient(180deg, rgba(24,26,46,.98), rgba(14,15,28,.99)); border: 1px solid rgba(255,194,75,.45); border-radius: 14px; box-shadow: 0 16px 44px rgba(0,0,0,.55); padding: 14px 15px; animation: toastIn .22s ease; }
