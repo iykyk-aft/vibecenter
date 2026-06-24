@@ -180,7 +180,7 @@ svg { display: block; width: 100%; overflow: visible; }
 /* ---- project table ---- */
 .app-list { display: flex; flex-direction: column; gap: 10px; }
 .app-row {
-  display: grid; grid-template-columns: 2fr 1.4fr 1fr 1fr 1fr; align-items: center; gap: 12px;
+  display: grid; grid-template-columns: 1.8fr 1.3fr 1.1fr .9fr .9fr .9fr; align-items: center; gap: 12px;
   padding: 14px 16px; border-radius: 14px; cursor: pointer;
   background: rgba(255,255,255,0.02); border: 1px solid transparent;
   transition: all .16s ease;
@@ -191,6 +191,8 @@ svg { display: block; width: 100%; overflow: visible; }
 .app-meta { font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .app-bar { height: 6px; border-radius: 6px; background: rgba(255,255,255,0.06); overflow: hidden; }
 .app-bar > span { display: block; height: 100%; border-radius: 6px; background: linear-gradient(90deg, var(--neon), var(--neon2)); }
+.spark { width: 100%; height: 30px; display: flex; align-items: center; }
+.spark.muted { font-size: 12px; color: var(--dim); justify-content: center; }
 
 .chip { font-size: 10.5px; padding: 2px 8px; border-radius: 20px; font-weight: 600; letter-spacing: .3px; }
 .chip.live { background: rgba(53,224,139,0.16); color: var(--good); display:inline-flex; align-items:center; gap:5px; }

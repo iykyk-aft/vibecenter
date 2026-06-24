@@ -132,6 +132,26 @@ function areaChart(dailyMap, { height = 150, unit = 'tokens' } = {}) {
   return wrap;
 }
 
+function sparkline(dailyMap, { w = 120, h = 30 } = {}) {
+  const vals = Object.keys(dailyMap).sort().slice(-30).map((d) => dailyMap[d]);
+  if (!vals.length || Math.max(...vals) === 0) return el('div', { class: 'spark muted' }, '—');
+  const max = Math.max(...vals, 1);
+  const stepX = vals.length > 1 ? w / (vals.length - 1) : 0;
+  const y = (v) => h - 2 - (v / max) * (h - 4);
+  const pts = vals.map((v, i) => `${(i * stepX).toFixed(1)},${y(v).toFixed(1)}`);
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+  svg.setAttribute('preserveAspectRatio', 'none');
+  svg.style.cssText = `width:100%;height:${h}px;display:block`;
+  const li = vals.length - 1;
+  const rising = vals[li] >= (vals[li - 1] ?? vals[li]);
+  const stroke = rising ? '#35e08b' : '#ff5cc8';
+  svg.innerHTML = `<polyline points="${pts.join(' ')}" fill="none" stroke="${stroke}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
+    <circle cx="${(li * stepX).toFixed(1)}" cy="${y(vals[li]).toFixed(1)}" r="2" fill="${stroke}"/>`;
+  return el('div', { class: 'spark', title: '30-day token trend' }, svg);
+}
+
 function donut(items, { size = 170 } = {}) {
   const total = items.reduce((s, i) => s + i.value, 0) || 1;
   const ns = 'http://www.w3.org/2000/svg';
@@ -221,6 +241,7 @@ function renderOverview(data) {
     el('div', { class: 'app-name' },
       el('span', {}, p.name),
       p.liveCount ? el('span', { class: 'chip live' }, el('span', { class: 'chip-dot' }), 'live') : null),
+    sparkline(p.daily || {}),
     el('div', { class: 'app-bar' }, el('span', { style: `width:${Math.max(4, (p.cost / maxCost) * 100)}%` })),
     el('div', { class: 'app-meta' }, fmtCost(p.cost)),
     el('div', { class: 'app-meta' }, `${fmtNum(p.billableTokens)} tok`),
