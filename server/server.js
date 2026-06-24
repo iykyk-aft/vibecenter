@@ -4,7 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import url from 'node:url';
 import crypto from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, spawn } from 'node:child_process';
 import { listProjects, getProject, readSessionChat } from './sessions.js';
 import { githubFor, repoMetrics, detectRepo } from './github.js';
 import { approvalsSummary, addRule, removeRule } from './approvals.js';
@@ -430,6 +430,18 @@ async function handleApi(req, res, pathname) {
     return sendJson(res, 200, { ok: true, name: 'vibecenter', version: VERSION, uptimeSec: Math.round(process.uptime()), build: assetBuild() });
   }
 
+  // Restart the agent so server-code updates take effect. A detached helper
+  // waits for this process to release the port, then starts a fresh server.
+  if (pathname === '/api/restart' && req.method === 'POST') {
+    sendJson(res, 200, { ok: true });
+    try {
+      const restarter = path.join(ROOT, 'vibecenter', 'restart.mjs');
+      spawn(process.execPath, [restarter], { cwd: ROOT, detached: true, stdio: 'ignore', windowsHide: true, env: process.env }).unref();
+    } catch { /* */ }
+    setTimeout(() => process.exit(0), 350); // let the response flush, then free the port
+    return;
+  }
+
   if (pathname.startsWith('/api/project/')) {
     const id = decodeURIComponent(pathname.slice('/api/project/'.length));
     const p = mergedProjects().find((x) => x.id === id);
@@ -652,10 +664,14 @@ function streamQuery(res, req, cwd, prompt, model, resumeId, permissionMode, met
 
 // Newest mtime of the app shell — bumps whenever the UI is edited, so the
 // desktop window can detect an update and reload itself.
+// Newest mtime across the UI AND server/hook code, so the desktop window can
+// detect ANY update (a page reload covers web changes; a restart covers server).
 function assetBuild() {
   let m = 0;
-  for (const f of ['app.js', 'styles.css', 'index.html']) {
-    try { m = Math.max(m, fs.statSync(path.join(WEB_DIR, f)).mtimeMs); } catch { /* missing */ }
+  const add = (f) => { try { m = Math.max(m, fs.statSync(f).mtimeMs); } catch { /* missing */ } };
+  for (const f of ['app.js', 'styles.css', 'index.html']) add(path.join(WEB_DIR, f));
+  for (const dir of [path.join(ROOT, 'server'), path.join(ROOT, 'hooks')]) {
+    try { for (const f of fs.readdirSync(dir)) if (/\.m?js$/.test(f)) add(path.join(dir, f)); } catch { /* */ }
   }
   return Math.round(m);
 }

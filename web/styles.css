@@ -346,6 +346,11 @@ select option { background: #14162a; color: var(--text); }
 .cb-tool { font-size: 10.5px; padding: 2px 8px; border-radius: 7px; background: rgba(24,224,216,.12); color: var(--neon2); }
 .cb-status { font-size: 11px; color: var(--dim); margin-top: 10px; font-variant-numeric: tabular-nums; }
 .cb-stream { display: flex; flex-direction: column; gap: 10px; }
+/* ---- update / restart banner ---- */
+.update-bar { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); z-index: 95; display: flex; align-items: center; gap: 14px; padding: 9px 12px 9px 18px; background: linear-gradient(180deg, rgba(26,28,50,.98), rgba(14,15,28,.99)); border: 1px solid var(--neon); border-radius: 12px; box-shadow: 0 14px 44px rgba(0,0,0,.55); font-size: 13px; font-weight: 500; animation: toastIn .25s ease; }
+.update-x { background: rgba(255,255,255,.06); border: none; color: var(--muted); width: 26px; height: 26px; border-radius: 8px; cursor: pointer; font-size: 12px; }
+.update-x:hover { background: rgba(255,93,108,.2); color: var(--bad); }
+
 /* ---- in-app approval prompts ---- */
 .approval-dock { position: fixed; right: 20px; bottom: 20px; z-index: 90; display: flex; flex-direction: column; gap: 12px; width: min(380px, calc(100vw - 40px)); }
 .approval-toast { background: linear-gradient(180deg, rgba(24,26,46,.98), rgba(14,15,28,.99)); border: 1px solid rgba(255,194,75,.45); border-radius: 14px; box-shadow: 0 16px 44px rgba(0,0,0,.55); padding: 14px 15px; animation: toastIn .22s ease; }

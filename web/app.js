@@ -2114,15 +2114,44 @@ async function refresh() {
   }
 }
 
-// Auto-reload the desktop window when the UI assets change on disk, so the
-// local app always reflects the latest build without a manual hard-reload.
+// When the build changes on disk, show a visible "Update available" banner so
+// the user can apply it on their terms (a full restart picks up server changes,
+// not just a page reload).
 let __build = null;
 async function checkForUpdate() {
   try {
     const h = await api('/api/health');
     if (__build == null) { __build = h.build; return; }
-    if (h.build && h.build !== __build) location.reload();
+    if (h.build && h.build !== __build) showUpdateBanner();
   } catch { /* server blip */ }
+}
+function showUpdateBanner() {
+  if ($('#updateBar')) return;
+  const btn = el('button', { class: 'btn', style: 'padding:6px 14px', onclick: () => applyUpdate(btn) }, '🔄 Restart & update');
+  const bar = el('div', { id: 'updateBar', class: 'update-bar' },
+    el('span', {}, '✨ A new version is ready.'),
+    btn,
+    el('button', { class: 'update-x', title: 'Later', onclick: () => bar.remove() }, '✕'));
+  document.body.append(bar);
+}
+async function applyUpdate(btn) {
+  btn.disabled = true; btn.textContent = '⏳ Restarting…';
+  // Ask the agent to restart; if that isn't available (e.g. via the broker), a
+  // plain reload still picks up web changes.
+  let restarting = false;
+  try { const r = await api('/api/restart', { method: 'POST' }); restarting = !!(r && r.ok); } catch { /* */ }
+  if (!restarting) { location.reload(); return; }
+  // Wait for the fresh server to come back, then reload into it.
+  const started = Date.now();
+  const poll = async () => {
+    try {
+      const h = await (await fetch('/api/health')).json();
+      if (h && h.ok) { location.reload(); return; }
+    } catch { /* still down */ }
+    if (Date.now() - started > 30000) { location.reload(); return; }
+    setTimeout(poll, 800);
+  };
+  setTimeout(poll, 1200);
 }
 
 // ---- machines (one account, many computers) --------------------------------
