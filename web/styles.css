@@ -418,6 +418,11 @@ input:focus { border-color: var(--neon); box-shadow: 0 0 0 3px rgba(124,92,255,0
 .bench-main.layout-grid { grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); }
 .bench-main.layout-split .bench-pane, .bench-main.layout-grid .bench-pane { height: clamp(340px, 46vh, 560px); }
 .bench-pane.is-active { border-color: rgba(124,92,255,.55); box-shadow: 0 0 0 1px rgba(124,92,255,.3); }
+.pane-max { width: 28px; height: 28px; background: rgba(255,255,255,.06); border: 1px solid var(--glass-brd); color: var(--muted); border-radius: 8px; cursor: pointer; font-size: 13px; line-height: 1; }
+.pane-max:hover { background: rgba(124,92,255,.14); border-color: var(--neon); color: var(--text); }
+.pane-max.on { background: rgba(124,92,255,.2); color: #cbb8ff; }
+/* Maximize is only meaningful when panes are tiled — hide it in single-pane focus. */
+.bench-main.layout-focus .pane-max { display: none; }
 
 /* ---- billing links ---- */
 .billing-links { display: flex; flex-direction: column; gap: 8px; }

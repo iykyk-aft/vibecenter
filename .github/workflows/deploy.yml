@@ -20,7 +20,22 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
+      # Until a VPS is wired up (DEPLOY_HOST secret set), skip cleanly instead of
+      # failing every push with a red X. Add the DEPLOY_* secrets to turn it on.
+      - name: Check deploy is configured
+        id: cfg
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          if [ -n "$DEPLOY_HOST" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Broker deploy skipped::DEPLOY_HOST secret not set — add DEPLOY_HOST / DEPLOY_USER / DEPLOY_SSH_KEY in repo Settings → Secrets to enable auto-deploy."
+          fi
+
       - name: SSH in and run deploy script
+        if: steps.cfg.outputs.configured == 'true'
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.DEPLOY_HOST }}

@@ -1011,10 +1011,18 @@ function buildBenchSession(project, write, saved) {
     b.activeId = sess.id; sess.unread = false;
     saveBench(); refreshRail(); markActivePanes();
   });
+  // Maximize: in split/grid, blow this one pane up to full-bleed and back.
+  const maxBtn = el('button', { class: 'pane-max', title: 'Maximize', onclick: () => toggleMaxBench(sess.id) }, '⤢');
+  sess.syncMax = () => {
+    const on = state.bench && state.bench.maximizedId === sess.id;
+    maxBtn.textContent = on ? '⤡' : '⤢';
+    maxBtn.title = on ? 'Restore' : 'Maximize';
+    maxBtn.classList.toggle('on', !!on);
+  };
   const pane = el('div', { class: 'bench-pane' },
     el('div', { class: 'bench-head' },
       el('span', { class: 'bench-title', title: project.cwd || project.name }, project.name),
-      el('div', { style: 'display:flex;gap:8px;align-items:center' }, toggle,
+      el('div', { style: 'display:flex;gap:8px;align-items:center' }, toggle, maxBtn,
         el('button', { class: 'modal-x', style: 'width:28px;height:28px', title: 'Close session', onclick: () => closeBenchSession(sess.id) }, '✕'))),
     body,
     el('div', { class: 'bench-input' }, el('div', { class: 'q-bar' }, ta, stopBtn, btn)));
@@ -1056,6 +1064,7 @@ function closeBenchSession(id) {
   const sess = b.sessions[i];
   if (sess && sess.abort) { try { sess.abort.abort(); } catch { /* */ } }
   b.sessions.splice(i, 1);
+  if (b.maximizedId === id) b.maximizedId = null;
   if (b.activeId === id) b.activeId = b.sessions.length ? b.sessions[Math.min(i, b.sessions.length - 1)].id : null;
   saveBench();
   renderWorkbench();
@@ -1158,12 +1167,33 @@ function setLayout(layout) {
   const b = ensureBench();
   if (!BENCH_LAYOUTS.includes(layout) || b.layout === layout) return;
   b.layout = layout;
+  b.maximizedId = null; // switching layout drops any temporary maximize
   saveBench();
   renderWorkbench();
+}
+function syncMaxButtons() {
+  const b = state.bench; if (!b) return;
+  for (const s of b.sessions) if (s.syncMax) s.syncMax();
+}
+function toggleMaxBench(id) {
+  const b = ensureBench();
+  b.maximizedId = b.maximizedId === id ? null : id;
+  if (b.maximizedId) { b.activeId = id; const s = b.sessions.find((x) => x.id === id); if (s) s.unread = false; }
+  saveBench();
+  renderWorkbenchMain(); refreshRail();
 }
 function renderWorkbenchMain() {
   const b = state.bench; if (!b || !b.mainEl) return;
   if (!b.sessions.length) { b.mainEl.className = 'bench-main'; b.mainEl.replaceChildren(benchEmpty()); return; }
+  // A maximized pane overrides the layout: show just it, full-bleed.
+  const maxed = b.maximizedId && b.sessions.find((s) => s.id === b.maximizedId);
+  if (maxed) {
+    b.mainEl.className = 'bench-main layout-max';
+    b.mainEl.replaceChildren(maxed.paneEl);
+    setTimeout(() => { maxed.bodyEl.scrollTop = maxed.bodyEl.scrollHeight; }, 0);
+    markActivePanes(); syncMaxButtons();
+    return;
+  }
   const layout = b.layout || 'focus';
   b.mainEl.className = 'bench-main layout-' + layout;
   if (layout === 'focus') {
@@ -1176,7 +1206,7 @@ function renderWorkbenchMain() {
     b.mainEl.replaceChildren(...b.sessions.map((s) => s.paneEl));
     setTimeout(() => { for (const s of b.sessions) if (s.bodyEl) s.bodyEl.scrollTop = s.bodyEl.scrollHeight; }, 0);
   }
-  markActivePanes();
+  markActivePanes(); syncMaxButtons();
 }
 function renderWorkbench() {
   $('#crumb').textContent = 'Workbench';
