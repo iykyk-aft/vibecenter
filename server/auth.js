@@ -5,7 +5,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
-const AUTH_FILE = path.join(process.cwd(), 'data', 'auth.json');
+// Override with CC_AUTH_FILE so the broker can keep its own account store
+// separate from a locally-running agent's.
+const AUTH_FILE = process.env.CC_AUTH_FILE || path.join(process.cwd(), 'data', 'auth.json');
 const SESSION_TTL = 30 * 86400e3; // 30 days
 
 function read() {

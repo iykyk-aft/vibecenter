@@ -18,6 +18,8 @@
     "start": "node server/server.js",
     "dev": "node --watch server/server.js",
     "app": "node vibecenter/launch.mjs",
+    "broker": "node broker/broker.js",
+    "connect": "node broker/connect.mjs",
     "setup": "powershell -ExecutionPolicy Bypass -File vibecenter/make-icon.ps1 && powershell -ExecutionPolicy Bypass -File vibecenter/install-shortcut.ps1"
   },
   "engines": {

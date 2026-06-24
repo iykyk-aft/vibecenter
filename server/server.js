@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import url from 'node:url';
+import crypto from 'node:crypto';
 import { listProjects, getProject, readSessionChat } from './sessions.js';
 import { githubFor, repoMetrics } from './github.js';
 import { approvalsSummary, addRule, removeRule } from './approvals.js';
@@ -57,6 +58,18 @@ const AUTH_EXEMPT = new Set([
   '/api/auth/status', '/api/auth/login', '/api/auth/register', '/api/auth/logout',
   '/api/health', '/api/approval-request', '/api/approval-poll',
 ]);
+
+// Loopback-only shared secret: the broker bridge forwards already-authenticated
+// remote requests to this agent with this header, bypassing the local login gate
+// (the broker is the auth authority for remote access).
+const INTERNAL_TOKEN_FILE = path.join(DATA_DIR, 'internal-token');
+function loadInternalToken() {
+  try { const t = fs.readFileSync(INTERNAL_TOKEN_FILE, 'utf8').trim(); if (t) return t; } catch { /* create below */ }
+  const t = crypto.randomBytes(24).toString('hex');
+  try { fs.writeFileSync(INTERNAL_TOKEN_FILE, t); } catch { /* non-fatal */ }
+  return t;
+}
+const INTERNAL_TOKEN = loadInternalToken();
 
 // ---- approval gateway state -------------------------------------------------
 // In-memory queue of tool calls awaiting a dashboard decision. The blocking
@@ -560,7 +573,8 @@ const server = http.createServer(async (req, res) => {
     if (pathname.startsWith('/api/')) {
       // Once an owner account exists, every data/control endpoint needs a valid
       // session (the SPA shell + auth/health/gateway-hook stay open).
-      if (hasUsers() && !AUTH_EXEMPT.has(pathname) && !currentUser(req)) {
+      if (hasUsers() && !AUTH_EXEMPT.has(pathname) && !currentUser(req)
+          && req.headers['x-cc-internal'] !== INTERNAL_TOKEN) {
         return sendJson(res, 401, { error: 'Sign in required.' });
       }
       return await handleApi(req, res, pathname);
