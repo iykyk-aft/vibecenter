@@ -1036,7 +1036,7 @@ function buildBenchSession(project, write, saved) {
     el('div', { class: 'bench-head' },
       el('span', { class: 'bench-title', title: project.cwd || project.name }, project.name),
       el('div', { style: 'display:flex;gap:8px;align-items:center' }, toggle, apprBtn, maxBtn,
-        el('button', { class: 'modal-x', style: 'width:28px;height:28px', title: 'Close session', onclick: () => closeBenchSession(sess.id) }, '✕'))),
+        el('button', { class: 'modal-x', style: 'width:28px;height:28px', title: 'End session', onclick: () => closeBenchSession(sess.id) }, '✕'))),
     body,
     el('div', { class: 'bench-input' }, el('div', { class: 'q-bar' }, ta, stopBtn, btn)));
   sess.paneEl = pane; sess.bodyEl = body; sess.taEl = ta;
@@ -1091,18 +1091,40 @@ function setBenchStatus(sess, status) {
   // this on every token, and rebuilding the rail each time was the main UI lag.
   if (changed) { refreshRail(); saveBench(); }
 }
+function endRun(sess) {
+  // Stop an in-flight prompt: aborting the fetch makes the server kill the child.
+  if (sess && sess.abort) { try { sess.abort.abort(); } catch { /* */ } }
+  if (sess && sess.project) {
+    api('/api/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: sess.project.id }) }).catch(() => {});
+  }
+}
 function closeBenchSession(id) {
   const b = ensureBench();
   const i = b.sessions.findIndex((s) => s.id === id);
   if (i === -1) return;
-  // Stop an in-flight prompt so closing the pane doesn't leave claude running.
-  const sess = b.sessions[i];
-  if (sess && sess.abort) { try { sess.abort.abort(); } catch { /* */ } }
+  endRun(b.sessions[i]);
   b.sessions.splice(i, 1);
   if (b.maximizedId === id) b.maximizedId = null;
   if (b.activeId === id) b.activeId = b.sessions.length ? b.sessions[Math.min(i, b.sessions.length - 1)].id : null;
   saveBench();
-  renderWorkbench();
+  if (state.view === 'workbench') renderWorkbench(); // don't hijack other views
+}
+function benchSessionsForProject(projectId) {
+  return ((state.bench && state.bench.sessions) || []).filter((s) => s.project && s.project.id === projectId);
+}
+function closeAllBench(projectId) {
+  const b = ensureBench();
+  const keep = [];
+  for (const s of b.sessions) {
+    if (projectId && (!s.project || s.project.id !== projectId)) { keep.push(s); continue; }
+    endRun(s);
+    if (b.maximizedId === s.id) b.maximizedId = null;
+    if (b.activeId === s.id) b.activeId = null;
+  }
+  b.sessions = keep;
+  if (!b.activeId && b.sessions.length) b.activeId = b.sessions[0].id;
+  saveBench();
+  if (state.view === 'workbench') renderWorkbench();
 }
 function setActiveBench(id) {
   const b = ensureBench();
@@ -1260,7 +1282,9 @@ function renderWorkbench() {
   const rail = el('div', { class: 'bench-rail' },
     el('div', { class: 'bench-rail-head' },
       el('span', {}, 'Sessions ', el('span', { class: 'muted' }, String(b.sessions.length))),
-      el('button', { class: 'btn ghost', style: 'padding:5px 11px;font-size:12px', onclick: toggleNew }, '+ New')),
+      el('div', { style: 'display:flex;gap:6px' },
+        b.sessions.length ? el('button', { class: 'btn ghost', style: 'padding:5px 9px;font-size:12px', title: 'End every session', onclick: () => { if (confirm('End all ' + b.sessions.length + ' sessions?')) closeAllBench(); } }, '⏹ End all') : null,
+        el('button', { class: 'btn ghost', style: 'padding:5px 11px;font-size:12px', onclick: toggleNew }, '+ New'))),
     el('div', { class: 'bench-rail-sub' }, el('span', { class: 'muted', style: 'font-size:11px' }, 'Layout'), layoutSeg),
     newHost, railList);
   const main = el('div', { class: 'bench-main' });
@@ -1346,6 +1370,21 @@ async function renderProject(id) {
       el('div', { class: 'card-title' }, 'Local Git'),
       el('div', { style: 'font-size:13px;color:var(--muted);' },
         `branch ${gh.local.branch} · ${gh.local.commits || '?'} commits · ${gh.local.dirtyFiles} uncommitted · last: ${gh.local.lastSubject || '—'}`)));
+  }
+
+  // live workbench sessions for this app — endable right here
+  const wb = benchSessionsForProject(p.id);
+  if (wb.length) {
+    v.append(el('div', { class: 'card fade-in' },
+      el('div', { class: 'card-title' }, '🟢 Sessions running here', el('span', { class: 'muted' }, `${wb.length} in Workbench`),
+        el('button', { class: 'btn ghost', style: 'margin-left:auto;padding:5px 11px;font-size:12px', onclick: () => { closeAllBench(p.id); renderProject(p.id); } }, '⏹ End all')),
+      ...wb.map((s) => {
+        const meta = BENCH_STATUS[s.status] || BENCH_STATUS.idle;
+        return el('div', { class: 'session-row' },
+          el('div', { class: 'st' }, el('span', { class: 'rail-dot ' + meta.dot, style: 'display:inline-block;margin-right:9px;vertical-align:middle' }),
+            (s.write ? '✏️ ' : '🔒 ') + meta.label),
+          el('button', { class: 'btn ghost', style: 'padding:5px 12px', onclick: () => { closeBenchSession(s.id); renderProject(p.id); } }, '⏹ End session'));
+      })));
   }
 
   // sessions

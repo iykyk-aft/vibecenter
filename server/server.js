@@ -78,6 +78,22 @@ const INTERNAL_TOKEN = loadInternalToken();
 const pending = new Map(); // id -> { id, tool, input, cwd, project, session, ts, status, reason }
 let approvalSeq = 1;
 
+// Active dashboard-spawned Claude runs, so a session can be ended from anywhere
+// (its own pane, another tab, or the application page) — not just by closing the
+// pane that started it. id -> { child, project, projectName, session, startedAt }.
+const activeRuns = new Map();
+let runSeq = 1;
+function stopRuns(match) {
+  let killed = 0;
+  for (const [id, r] of activeRuns) {
+    if (match(id, r)) {
+      try { if (r.child && !r.child.killed) r.child.kill(); } catch { /* */ }
+      activeRuns.delete(id); killed++;
+    }
+  }
+  return killed;
+}
+
 function readGateway() {
   const g = readConfig().gateway || {};
   return { enabled: !!g.enabled, autoAll: !!g.autoAll, projects: g.projects || {}, projectMode: g.projectMode || {} };
@@ -493,7 +509,25 @@ async function handleApi(req, res, pathname) {
     if (!cwd) return sendJson(res, 400, { error: 'This application has no local folder to query.' });
     if (!body.prompt || !String(body.prompt).trim()) return sendJson(res, 400, { error: 'empty prompt' });
     // write:true → 'default' mode (can edit/run, gated by the approvals hook).
-    return streamQuery(res, req, cwd, String(body.prompt).trim(), body.model, body.session, body.write ? 'default' : 'plan');
+    return streamQuery(res, req, cwd, String(body.prompt).trim(), body.model, body.session, body.write ? 'default' : 'plan',
+      { project: proj.id, projectName: proj.name });
+  }
+
+  // List active dashboard runs (optionally filtered to one application).
+  if (pathname === '/api/active') {
+    const proj = new URL(req.url, 'http://localhost').searchParams.get('project');
+    const runs = [...activeRuns.entries()]
+      .filter(([, r]) => !proj || r.project === proj)
+      .map(([id, r]) => ({ runId: id, project: r.project, projectName: r.projectName, session: r.session, startedAt: r.startedAt }));
+    return sendJson(res, 200, { runs });
+  }
+
+  // End a running session by runId, or every run for an application.
+  if (pathname === '/api/stop' && req.method === 'POST') {
+    const body = await readBody(req);
+    const killed = stopRuns((id, r) =>
+      (body.runId && id === body.runId) || (body.project && r.project === body.project));
+    return sendJson(res, 200, { ok: true, killed });
   }
 
   // ---- approval gateway ----
@@ -556,18 +590,23 @@ async function handleApi(req, res, pathname) {
 }
 
 // Stream a headless Claude query back as newline-delimited JSON events.
-function streamQuery(res, req, cwd, prompt, model, resumeId, permissionMode) {
+function streamQuery(res, req, cwd, prompt, model, resumeId, permissionMode, meta = {}) {
   res.writeHead(200, {
     'Content-Type': 'application/x-ndjson; charset=utf-8',
     'Cache-Control': 'no-cache',
     'X-Accel-Buffering': 'no',
   });
   const send = (ev) => { try { res.write(JSON.stringify(ev) + '\n'); } catch { /* client gone */ } };
+  const runId = 'run-' + (runSeq++);
   const child = runQuery({ cwd, prompt, model, resumeId, permissionMode }, (ev) => {
     send(ev);
-    if (ev.type === 'done') { try { res.end(); } catch { /* */ } }
+    if (ev.type === 'done') { activeRuns.delete(runId); try { res.end(); } catch { /* */ } }
   });
-  req.on('close', () => { if (child && !child.killed) { try { child.kill(); } catch { /* */ } } });
+  if (child) {
+    activeRuns.set(runId, { child, project: meta.project || null, projectName: meta.projectName || null, session: resumeId || null, startedAt: Date.now() });
+    send({ type: 'run', runId }); // let the client stop this exact run by id
+  }
+  req.on('close', () => { activeRuns.delete(runId); if (child && !child.killed) { try { child.kill(); } catch { /* */ } } });
 }
 
 // Newest mtime of the app shell — bumps whenever the UI is edited, so the
