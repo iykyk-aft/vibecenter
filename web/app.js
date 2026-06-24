@@ -946,6 +946,7 @@ function saveBench() {
       seq: b.seq,
       activeId: b.activeId,
       layout: b.layout,
+      maximizedId: b.maximizedId || null,
       // Only the durable bits — DOM nodes and the detached live stream can't be
       // serialized; we rebuild the pane and reload the transcript on restore.
       sessions: b.sessions.map((s) => ({
@@ -965,6 +966,8 @@ function loadBench() {
   for (const s of data.sessions) {
     if (s && s.project) buildBenchSession(s.project, s.write, s);
   }
+  // Restore a maximized pane only if that session actually came back.
+  if (data.maximizedId && b.sessions.some((s) => s.id === data.maximizedId)) b.maximizedId = data.maximizedId;
 }
 // Reload a restored session's conversation from its transcript so the pane
 // isn't blank when you come back to it.
@@ -2180,4 +2183,13 @@ async function boot() {
 }
 
 document.querySelectorAll('.nav-item').forEach((b) => b.addEventListener('click', () => navView(b.dataset.view)));
+// Esc restores a maximized workbench pane back to its tiled layout. Skipped
+// when a modal is open so it doesn't fight the modal's own dismissal.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || state.modal) return;
+  if (state.view === 'workbench' && state.bench && state.bench.maximizedId) {
+    e.preventDefault();
+    toggleMaxBench(state.bench.maximizedId);
+  }
+});
 boot();
