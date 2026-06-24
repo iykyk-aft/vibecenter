@@ -96,50 +96,33 @@ function stopRuns(match) {
 }
 
 // ---- ending EXTERNAL sessions (VS Code / terminal) --------------------------
-// The logger hook records its parent PID per session; the running Claude process
-// is an ancestor of that hook. Resolve the freshest ppid, walk up to claude.exe,
-// and kill that process tree.
-function sessionPpid(sessionId) {
+// The logger hook resolves + caches each session's claude.exe PID (data/
+// session-pids.json). To end one, verify that PID is still a claude process
+// (guards against PID reuse) and kill its tree.
+function sessionPid(sessionId) {
   try {
-    const lines = fs.readFileSync(path.join(DATA_DIR, 'approval-events.jsonl'), 'utf8').split('\n');
-    for (let i = lines.length - 1; i >= 0; i--) {
-      if (!lines[i]) continue;
-      let e; try { e = JSON.parse(lines[i]); } catch { continue; }
-      if (e.session === sessionId && e.ppid) return { ppid: e.ppid, cwd: e.cwd, ts: e.time };
-    }
-  } catch { /* no log yet */ }
+    const m = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'session-pids.json'), 'utf8'));
+    const e = m[sessionId];
+    if (e && e.pid) return e;
+  } catch { /* no cache yet */ }
   return null;
 }
-function killClaudeForPpid(ppid) {
+function processName(pid) {
   if (process.platform !== 'win32') {
-    // POSIX: walk /proc-free via ps; kill the nearest claude ancestor.
-    const ps = spawnSync('ps', ['-eo', 'pid=,ppid=,comm='], { encoding: 'utf8' });
-    if (ps.status !== 0) return { ok: false, error: 'could not enumerate processes' };
-    const by = new Map();
-    for (const ln of ps.stdout.split('\n')) { const m = ln.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/); if (m) by.set(+m[1], { parent: +m[2], name: m[3] }); }
-    let pid = ppid, target = null;
-    for (let i = 0; i < 15 && pid; i++) { const p = by.get(pid); if (!p) break; if (/claude/i.test(p.name)) { target = pid; break; } pid = p.parent; }
-    if (!target) return { ok: false, error: 'no live claude process for that session' };
-    const k = spawnSync('kill', ['-TERM', String(target)], { encoding: 'utf8' });
-    return { ok: k.status === 0, pid: target };
+    const r = spawnSync('ps', ['-p', String(pid), '-o', 'comm='], { encoding: 'utf8' });
+    return (r.stdout || '').trim();
   }
-  const snap = spawnSync('powershell', ['-NoProfile', '-Command',
-    'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name | ConvertTo-Json -Compress'],
-    { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, windowsHide: true });
-  if (!snap.stdout) return { ok: false, error: 'could not enumerate processes' };
-  let procs; try { procs = JSON.parse(snap.stdout); } catch { return { ok: false, error: 'process snapshot parse failed' }; }
-  if (!Array.isArray(procs)) procs = [procs];
-  const byId = new Map(procs.map((p) => [p.ProcessId, p]));
-  let pid = ppid, target = null;
-  for (let i = 0; i < 15 && pid; i++) {
-    const p = byId.get(pid);
-    if (!p) break;
-    if (/claude/i.test(p.Name)) { target = pid; break; }
-    pid = p.ParentProcessId;
-  }
-  if (!target) return { ok: false, error: 'no live claude process for that session (it may have already ended)' };
-  const k = spawnSync('taskkill', ['/F', '/T', '/PID', String(target)], { encoding: 'utf8', windowsHide: true });
-  return { ok: k.status === 0, pid: target, output: (k.stdout || k.stderr || '').trim() };
+  const r = spawnSync('powershell', ['-NoProfile', '-Command',
+    `$p=Get-CimInstance Win32_Process -Filter "ProcessId=${pid}"; if($p){ $p.Name }`],
+    { encoding: 'utf8', windowsHide: true, timeout: 6000 });
+  return (r.stdout || '').trim();
+}
+function killSessionPid(pid) {
+  if (!/claude/i.test(processName(pid))) return { ok: false, error: 'That session is no longer running (its process ended).' };
+  const k = process.platform === 'win32'
+    ? spawnSync('taskkill', ['/F', '/T', '/PID', String(pid)], { encoding: 'utf8', windowsHide: true })
+    : spawnSync('kill', ['-TERM', String(pid)], { encoding: 'utf8' });
+  return { ok: k.status === 0, pid, output: (k.stdout || k.stderr || '').trim() };
 }
 
 function readGateway() {
@@ -582,9 +565,9 @@ async function handleApi(req, res, pathname) {
   if (pathname === '/api/stop-session' && req.method === 'POST') {
     const body = await readBody(req);
     if (!body.session) return sendJson(res, 400, { error: 'session required' });
-    const info = sessionPpid(body.session);
-    if (!info) return sendJson(res, 404, { error: 'Can only end sessions that have run a tool since the logger hook was installed (no recorded process for this one).' });
-    const result = killClaudeForPpid(info.ppid);
+    const info = sessionPid(body.session);
+    if (!info) return sendJson(res, 404, { error: 'No recorded process for this session yet — it needs to run a tool once (so the hook can capture it) before it can be ended from here.' });
+    const result = killSessionPid(info.pid);
     return sendJson(res, result.ok ? 200 : 502, result);
   }
 
