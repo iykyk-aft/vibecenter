@@ -933,7 +933,7 @@ async function streamContinue(projectId, sessionId, prompt, stream, status, body
 const BENCH_KEY = 'cc.bench.v1';
 function ensureBench() {
   if (!state.bench) {
-    state.bench = { sessions: [], activeId: null, seq: 1 };
+    state.bench = { sessions: [], activeId: null, seq: 1, layout: 'focus' };
     loadBench();
   }
   return state.bench;
@@ -945,6 +945,7 @@ function saveBench() {
     localStorage.setItem(BENCH_KEY, JSON.stringify({
       seq: b.seq,
       activeId: b.activeId,
+      layout: b.layout,
       // Only the durable bits — DOM nodes and the detached live stream can't be
       // serialized; we rebuild the pane and reload the transcript on restore.
       sessions: b.sessions.map((s) => ({
@@ -960,6 +961,7 @@ function loadBench() {
   const b = state.bench;
   b.seq = data.seq || 1;
   b.activeId = data.activeId || null;
+  if (data.layout) b.layout = data.layout;
   for (const s of data.sessions) {
     if (s && s.project) buildBenchSession(s.project, s.write, s);
   }
@@ -1000,6 +1002,15 @@ function buildBenchSession(project, write, saved) {
   // Show Stop only while a prompt is in flight; let the rail/status reflect it too.
   sess.syncStop = () => { const running = sess.status === 'running' || sess.status === 'awaiting'; stopBtn.style.display = running ? '' : 'none'; };
   ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) send(); });
+  // In split/grid layouts every pane is on screen at once, so focusing one is
+  // how you pick the "active" session — update it cheaply (no re-render, which
+  // would steal focus) and just repaint the rail + pane highlights.
+  ta.addEventListener('focus', () => {
+    const b = state.bench;
+    if (!b || b.activeId === sess.id) return;
+    b.activeId = sess.id; sess.unread = false;
+    saveBench(); refreshRail(); markActivePanes();
+  });
   const pane = el('div', { class: 'bench-pane' },
     el('div', { class: 'bench-head' },
       el('span', { class: 'bench-title', title: project.cwd || project.name }, project.name),
@@ -1135,12 +1146,37 @@ function benchEmpty() {
     el('div', { class: 'muted', style: 'margin-bottom:20px;max-width:340px;text-align:center' }, 'Run many Claude Code sessions at once. Each keeps working while you focus another. Pick an app to start.'),
     el('div', { style: 'width:300px' }, newSessionForm()));
 }
+// Flag whichever panes are the active session so the highlight tracks focus in
+// the multi-pane layouts (cheap class toggle, no DOM rebuild).
+function markActivePanes() {
+  const b = state.bench; if (!b) return;
+  const multi = (b.layout || 'focus') !== 'focus';
+  for (const s of b.sessions) if (s.paneEl) s.paneEl.classList.toggle('is-active', multi && s.id === b.activeId);
+}
+const BENCH_LAYOUTS = ['focus', 'split', 'grid'];
+function setLayout(layout) {
+  const b = ensureBench();
+  if (!BENCH_LAYOUTS.includes(layout) || b.layout === layout) return;
+  b.layout = layout;
+  saveBench();
+  renderWorkbench();
+}
 function renderWorkbenchMain() {
   const b = state.bench; if (!b || !b.mainEl) return;
-  const sess = b.sessions.find((s) => s.id === b.activeId);
-  if (!sess) { b.mainEl.replaceChildren(benchEmpty()); return; }
-  b.mainEl.replaceChildren(sess.paneEl);
-  setTimeout(() => { sess.bodyEl.scrollTop = sess.bodyEl.scrollHeight; }, 0);
+  if (!b.sessions.length) { b.mainEl.className = 'bench-main'; b.mainEl.replaceChildren(benchEmpty()); return; }
+  const layout = b.layout || 'focus';
+  b.mainEl.className = 'bench-main layout-' + layout;
+  if (layout === 'focus') {
+    // One conversation at a time; the rail switches which.
+    const sess = b.sessions.find((s) => s.id === b.activeId) || b.sessions[0];
+    b.mainEl.replaceChildren(sess.paneEl);
+    setTimeout(() => { sess.bodyEl.scrollTop = sess.bodyEl.scrollHeight; }, 0);
+  } else {
+    // split / grid: every open session tiled and live at once.
+    b.mainEl.replaceChildren(...b.sessions.map((s) => s.paneEl));
+    setTimeout(() => { for (const s of b.sessions) if (s.bodyEl) s.bodyEl.scrollTop = s.bodyEl.scrollHeight; }, 0);
+  }
+  markActivePanes();
 }
 function renderWorkbench() {
   $('#crumb').textContent = 'Workbench';
@@ -1150,10 +1186,16 @@ function renderWorkbench() {
   const railList = el('div', { class: 'bench-rail-list' });
   const newHost = el('div', { class: 'bench-newform' });
   const toggleNew = () => { newHost.replaceChildren(newHost.childElementCount ? '' : newSessionForm()); };
+  // Layout switcher: Focus (one pane), Split (2 cols), Grid (tile them all).
+  const LAYOUT_BTNS = [['focus', '▭', 'Focus — one session'], ['split', '◫', 'Split — two columns'], ['grid', '▦', 'Grid — tile all sessions']];
+  const layoutSeg = el('div', { class: 'layout-seg' },
+    ...LAYOUT_BTNS.map(([id, icon, title]) => el('button',
+      { class: 'layout-btn' + (b.layout === id ? ' active' : ''), title, onclick: () => setLayout(id) }, icon)));
   const rail = el('div', { class: 'bench-rail' },
     el('div', { class: 'bench-rail-head' },
       el('span', {}, 'Sessions ', el('span', { class: 'muted' }, String(b.sessions.length))),
       el('button', { class: 'btn ghost', style: 'padding:5px 11px;font-size:12px', onclick: toggleNew }, '+ New')),
+    el('div', { class: 'bench-rail-sub' }, el('span', { class: 'muted', style: 'font-size:11px' }, 'Layout'), layoutSeg),
     newHost, railList);
   const main = el('div', { class: 'bench-main' });
   v.append(el('div', { class: 'bench-shell' }, rail, main));
