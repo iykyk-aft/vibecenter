@@ -5,8 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>⚡ Vibe Center</title>
   <meta name="theme-color" content="#7c5cff" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Vibe Center" />
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="icon" type="image/png" href="/assets/vibe.png" />
+  <link rel="apple-touch-icon" href="/assets/vibe.png" />
   <link rel="stylesheet" href="/styles.css" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>" />
 </head>
@@ -40,9 +45,14 @@
     </div>
   </aside>
 
+  <div id="navBackdrop" class="nav-backdrop"></div>
+
   <main class="main">
     <header class="topbar">
-      <div id="crumb" class="crumb">Overview</div>
+      <div class="topbar-left">
+        <button id="menuBtn" class="menu-btn" aria-label="Menu">☰</button>
+        <div id="crumb" class="crumb">Overview</div>
+      </div>
       <div class="topbar-right">
         <span id="refreshTick" class="refresh-tick">↻</span>
         <span id="updatedAt" class="updated-at"></span>

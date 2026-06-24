@@ -2369,6 +2369,26 @@ async function boot() {
 }
 
 document.querySelectorAll('.nav-item').forEach((b) => b.addEventListener('click', () => navView(b.dataset.view)));
+
+// Mobile drawer nav: hamburger toggles the sidebar; tapping a nav/app item or
+// the backdrop closes it.
+(function mobileNav() {
+  const sidebar = document.querySelector('.sidebar');
+  const backdrop = $('#navBackdrop');
+  const menuBtn = $('#menuBtn');
+  if (!sidebar || !backdrop || !menuBtn) return;
+  const close = () => { sidebar.classList.remove('open'); backdrop.classList.remove('show'); };
+  const open = () => { sidebar.classList.add('open'); backdrop.classList.add('show'); };
+  menuBtn.addEventListener('click', () => (sidebar.classList.contains('open') ? close() : open()));
+  backdrop.addEventListener('click', close);
+  sidebar.addEventListener('click', (e) => { if (e.target.closest('.nav-item, .project-item')) close(); });
+})();
+
+// Register the service worker so it's an installable PWA with an offline shell.
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => { /* not a secure context */ }));
+}
+
 // Esc restores a maximized workbench pane back to its tiled layout. Skipped
 // when a modal is open so it doesn't fight the modal's own dismissal.
 document.addEventListener('keydown', (e) => {
