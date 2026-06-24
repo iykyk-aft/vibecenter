@@ -9,7 +9,7 @@ import { approvalsSummary, addRule, removeRule } from './approvals.js';
 import { getCustomApps, addApp, removeApp, syntheticProjects } from './apps.js';
 import { ghStatus, projectsRoot, scaffoldProject } from './scaffold.js';
 import { runQuery } from './claude.js';
-import { prettyModel } from './pricing.js';
+import { prettyModel, costFor } from './pricing.js';
 
 const ROOT = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '..');
 const WEB_DIR = path.join(ROOT, 'web');
@@ -182,6 +182,7 @@ function accountPayload() {
   const comp = { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 }; // token composition
   const dailyTok = {}, dailyCost = {};
   const sessionSizes = []; // billable tokens per session, for the distribution histogram
+  const modelCacheRead = {}; // model -> cache-read tokens, for cache-savings math
   const activeDays = new Set();
   let win5Tok = 0, win5Msgs = 0, firstTs = Infinity;
   const range = { today: { tokens: 0, cost: 0 }, week: { tokens: 0, cost: 0 }, month: { tokens: 0, cost: 0 } };
@@ -194,6 +195,9 @@ function accountPayload() {
     comp.cacheCreation += p.tokens.cacheCreation; comp.cacheRead += p.tokens.cacheRead;
     for (const s of p.sessions) {
       if (s.billableTokens > 0) sessionSizes.push(s.billableTokens);
+      for (const [m, info] of Object.entries(s.models || {})) {
+        modelCacheRead[m] = (modelCacheRead[m] || 0) + ((info.usage && info.usage.cacheRead) || 0);
+      }
       for (const [name, c] of Object.entries(s.toolBreakdown || {})) toolAgg[name] = (toolAgg[name] || 0) + c;
       for (const m of s.msgTimes || []) {
         allTok += m.tok; allCost += m.cost;
@@ -226,6 +230,15 @@ function accountPayload() {
     if (run > peak5) peak5 = run;
   }
 
+  // Cache savings: cache reads bill at 0.1x input, so the discount is the gap
+  // between charging those tokens as fresh input vs. as cache reads (per model).
+  let cacheSavings = 0, cacheActual = 0;
+  for (const [m, crTok] of Object.entries(modelCacheRead)) {
+    if (!crTok) continue;
+    cacheSavings += costFor(m, { input: crTok }) - costFor(m, { cacheRead: crTok });
+    cacheActual += costFor(m, { cacheRead: crTok });
+  }
+
   const sum = (...names) => names.reduce((a, n) => a + (toolAgg[n] || 0), 0);
   return {
     generatedAt: now,
@@ -238,6 +251,7 @@ function accountPayload() {
     composition: comp,
     daily: dailyTok, dailyCost,
     sessionSizes,
+    cache: { savings: cacheSavings, actual: cacheActual, readTokens: comp.cacheRead },
     tools: Object.entries(toolAgg).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count),
     derived: {
       edits: sum('Edit', 'Write', 'MultiEdit', 'NotebookEdit'),

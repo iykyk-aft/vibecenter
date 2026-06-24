@@ -542,6 +542,27 @@ function hbars(items) {
     el('div', { class: 'hbar-val' }, fmtNum(it.value)))));
   return wrap;
 }
+function compareBar(label, value, maxValue, color, pre) {
+  return el('div', { style: 'margin-bottom:11px' },
+    el('div', { style: 'display:flex;justify-content:space-between;font-size:12px;margin-bottom:5px' },
+      el('span', {}, label), el('span', { class: 'muted' }, pre + fmtCost(value))),
+    el('div', { class: 'gauge' }, el('span', { class: 'gauge-fill', style: `width:${Math.max(2, (value / maxValue) * 100)}%;background:${color}` })));
+}
+function cacheSavingsCard(cache, totalCost, metered) {
+  if (!cache || !cache.readTokens) return null;
+  const pre = metered ? '' : '≈ ';
+  const without = totalCost + cache.savings;
+  const pct = without > 0 ? (cache.savings / without) * 100 : 0;
+  return el('div', { class: 'card fade-in' },
+    el('div', { class: 'card-title' }, 'Cache Savings', el('span', { class: 'muted' }, 'what prompt caching saved you')),
+    el('div', { style: 'display:flex;gap:28px;align-items:center;flex-wrap:wrap' },
+      el('div', {},
+        el('div', { class: 'kpi-value neon', style: 'font-size:38px' }, pre + fmtCost(cache.savings)),
+        el('div', { class: 'kpi-sub' }, `${pct.toFixed(0)}% off your effective bill · ${fmtNum(cache.readTokens)} tok served from cache`)),
+      el('div', { style: 'flex:1;min-width:280px' },
+        compareBar('Without caching', without, without, '#ff5cc8', pre),
+        compareBar('What you actually paid', totalCost, without, '#35e08b', pre))));
+}
 function sessionHistogram(sizes) {
   if (!sizes || !sizes.length) return el('div', { class: 'empty' }, 'No sessions yet');
   const EDGES = [0, 50e3, 100e3, 250e3, 500e3, 1e6, 2e6, 5e6, Infinity];
@@ -697,6 +718,10 @@ async function renderAccount() {
         el('div', { class: 'kpi-value neon', style: 'font-size:34px' }, (cacheEff * 100).toFixed(1) + '%'),
         el('div', { class: 'kpi-sub' }, 'input served from cache (~0.1× price)')),
       el('div', { style: 'flex:1;min-width:260px' }, compositionBar(c)))));
+
+  // cache savings
+  const cacheCard = cacheSavingsCard(a.cache, a.totals.cost, metered);
+  if (cacheCard) v.append(cacheCard);
 
   // activity heatmap (day × hour)
   v.append(el('div', { class: 'card fade-in' },
