@@ -168,6 +168,9 @@ svg { display: block; width: 100%; overflow: visible; }
 .chart-tip .ct-d { margin-left: 7px; font-size: 10px; }
 .chart-tip .ct-d.up { color: var(--good); }
 .chart-tip .ct-d.dn { color: var(--bad); }
+.chart-tip .ct-row { display: flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 10.5px; color: var(--muted); }
+.chart-tip .ct-row b { color: var(--text); margin-left: auto; }
+.chart-tip .ct-sw { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
 .axis-label { fill: var(--dim); font-size: 10px; }
 
 /* donut legend */

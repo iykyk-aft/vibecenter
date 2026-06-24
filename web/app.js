@@ -132,6 +132,100 @@ function areaChart(dailyMap, { height = 150, unit = 'tokens' } = {}) {
   return wrap;
 }
 
+// Stacked area of token usage per model over time.
+function stackedAreaChart(modelDaily, { height = 170, labelOf = (m) => m } = {}) {
+  const days = Object.keys(modelDaily || {}).sort().slice(-30);
+  if (!days.length) return el('div', { class: 'empty' }, 'No activity yet');
+  // rank models by total over the window; keep top 6, fold the rest into "Other"
+  const totals = {};
+  for (const d of days) for (const [m, t] of Object.entries(modelDaily[d])) {
+    if (m === '<synthetic>' || !t) continue;
+    totals[m] = (totals[m] || 0) + t;
+  }
+  let models = Object.keys(totals).sort((a, b) => totals[b] - totals[a]);
+  if (!models.length) return el('div', { class: 'empty' }, 'No model usage yet');
+  const TOP = 6;
+  const folded = models.length > TOP;
+  const keep = models.slice(0, TOP);
+  const valFor = (d, m) => {
+    if (m !== '__other__') return modelDaily[d][m] || 0;
+    return Object.entries(modelDaily[d]).reduce((s, [mm, t]) => s + (keep.includes(mm) || mm === '<synthetic>' ? 0 : t), 0);
+  };
+  const layers = folded ? [...keep, '__other__'] : keep;
+  const labels = layers.map((m) => (m === '__other__' ? 'Other' : labelOf(m)));
+
+  // per-day stack + max
+  const stacks = days.map((d) => layers.map((m) => valFor(d, m)));
+  const sums = stacks.map((s) => s.reduce((a, b) => a + b, 0));
+  const max = Math.max(...sums, 1);
+  const n = days.length;
+  const W = 600, H = height, pad = 8, topPad = 12;
+  const stepX = n > 1 ? (W - pad * 2) / (n - 1) : 0;
+  const x = (i) => pad + i * stepX;
+  const y = (v) => H - pad - (v / max) * (H - pad * 2 - topPad);
+
+  // cumulative upper edges per layer
+  const cum = days.map(() => 0);
+  const paths = [];
+  layers.forEach((m, k) => {
+    const lower = days.map((_, i) => cum[i]);
+    days.forEach((_, i) => { cum[i] += stacks[i][k]; });
+    const upper = days.map((_, i) => cum[i]);
+    const top = upper.map((v, i) => `${x(i)},${y(v)}`).join(' L');
+    const bot = lower.map((v, i) => `${x(i)},${y(v)}`).reverse().join(' L');
+    paths.push(`<path d="M${top} L${bot} Z" fill="${COLORS[k % COLORS.length]}" fill-opacity="0.62" stroke="${COLORS[k % COLORS.length]}" stroke-width="0.6"/>`);
+  });
+  const grid = [0.25, 0.5, 0.75, 1].map((f) => {
+    const gy = H - pad - f * (H - pad * 2 - topPad);
+    return `<line x1="${pad}" y1="${gy}" x2="${W - pad}" y2="${gy}" stroke="rgba(255,255,255,.06)" stroke-width="1"/>`;
+  }).join('');
+
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.setAttribute('preserveAspectRatio', 'none');
+  svg.style.cssText = `width:100%;height:${H}px;display:block`;
+  svg.innerHTML = grid + paths.join('');
+
+  const wrap = el('div', { class: 'chart-wrap', style: `position:relative;height:${H}px` });
+  wrap.append(svg);
+  wrap.append(el('div', { class: 'chart-ymax' }, fmtNum(max)));
+  const cross = el('div', { class: 'chart-cross' });
+  const tip = el('div', { class: 'chart-tip' });
+  cross.style.display = tip.style.display = 'none';
+  wrap.append(cross, tip);
+  wrap.addEventListener('mousemove', (e) => {
+    const rect = wrap.getBoundingClientRect();
+    const vbX = ((e.clientX - rect.left) / rect.width) * W;
+    let i = Math.round((vbX - pad) / (stepX || 1));
+    i = Math.max(0, Math.min(n - 1, i));
+    const leftPx = (x(i) / W) * rect.width;
+    cross.style.display = tip.style.display = 'block';
+    cross.style.left = leftPx + 'px';
+    const rows = layers.map((m, k) => ({ label: labels[k], v: stacks[i][k], c: COLORS[k % COLORS.length] }))
+      .filter((r) => r.v > 0).sort((a, b) => b.v - a.v);
+    tip.innerHTML = `<b>${days[i].slice(5)}</b> · ${fmtNum(sums[i])} tok`
+      + rows.map((r) => `<div class="ct-row"><span class="ct-sw" style="background:${r.c}"></span>${r.label} <b>${fmtNum(r.v)}</b></div>`).join('');
+    const tw = 190;
+    tip.style.left = Math.max(2, Math.min(rect.width - tw, leftPx - tw / 2)) + 'px';
+    tip.style.top = '6px';
+  });
+  wrap.addEventListener('mouseleave', () => { cross.style.display = tip.style.display = 'none'; });
+  wrap.append(el('div', { style: 'display:flex;justify-content:space-between;font-size:10px;color:var(--dim);margin-top:6px;' },
+    el('span', {}, days[0].slice(5)), el('span', {}, days[n - 1].slice(5))));
+
+  const total = Object.values(totals).reduce((a, b) => a + b, 0) || 1;
+  const legend = el('div', { class: 'legend', style: 'margin-top:12px' },
+    ...layers.map((m, k) => {
+      const v = m === '__other__' ? models.slice(TOP).reduce((s, mm) => s + totals[mm], 0) : totals[m];
+      return el('div', { class: 'legend-item' },
+        el('span', { class: 'legend-swatch', style: `background:${COLORS[k % COLORS.length]}` }),
+        el('span', { class: 'legend-name' }, labels[k]),
+        el('span', { class: 'legend-val' }, `${fmtNum(v)} · ${(v / total * 100).toFixed(0)}%`));
+    }));
+  return el('div', {}, wrap, legend);
+}
+
 function sparkline(dailyMap, { w = 120, h = 30 } = {}) {
   const vals = Object.keys(dailyMap).sort().slice(-30).map((d) => dailyMap[d]);
   if (!vals.length || Math.max(...vals) === 0) return el('div', { class: 'spark muted' }, '—');
@@ -234,6 +328,15 @@ function renderOverview(data) {
       el('div', { class: 'card-title' }, 'Model Mix'),
       modelMix(data.models)));
   v.append(top);
+
+  // model usage over time (stacked area)
+  if (data.modelDaily && Object.keys(data.modelDaily).length) {
+    const labelMap = {};
+    for (const m of data.models) labelMap[m.model] = m.label;
+    v.append(el('div', { class: 'card fade-in' },
+      el('div', { class: 'card-title' }, 'Model Usage Over Time', el('span', { class: 'muted' }, 'tokens by model · last 30 days')),
+      stackedAreaChart(data.modelDaily, { labelOf: (m) => labelMap[m] || m.replace('claude-', '') })));
+  }
 
   // applications table
   const maxCost = Math.max(...data.projects.map((p) => p.cost), 0.0001);

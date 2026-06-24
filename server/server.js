@@ -107,6 +107,7 @@ function overviewPayload(projects) {
   let cost = 0, billableTokens = 0, sessions = 0, live = 0, toolCalls = 0;
   const modelTokens = {};
   const daily = {};
+  const modelDaily = {}; // 'YYYY-MM-DD' -> { model: tokens }
   for (const p of projects) {
     totals.input += p.tokens.input;
     totals.output += p.tokens.output;
@@ -119,6 +120,10 @@ function overviewPayload(projects) {
     toolCalls += p.toolCalls;
     for (const [m, t] of Object.entries(p.modelTokens)) modelTokens[m] = (modelTokens[m] || 0) + t;
     for (const [d, t] of Object.entries(p.daily)) daily[d] = (daily[d] || 0) + t;
+    for (const [d, mm] of Object.entries(p.dailyModel || {})) {
+      if (!modelDaily[d]) modelDaily[d] = {};
+      for (const [m, t] of Object.entries(mm)) modelDaily[d][m] = (modelDaily[d][m] || 0) + t;
+    }
   }
   return {
     generatedAt: Date.now(),
@@ -129,6 +134,7 @@ function overviewPayload(projects) {
       .map(([model, tokens]) => ({ model, label: prettyModel(model), tokens }))
       .sort((a, b) => b.tokens - a.tokens),
     daily,
+    modelDaily,
     projects: projects.map((p) => ({
       id: p.id,
       name: p.name,

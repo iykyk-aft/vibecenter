@@ -51,6 +51,7 @@ function parseSession(file) {
   let toolCalls = 0;
   const perModel = {}; // model -> usage
   const dailyTokens = {}; // YYYY-MM-DD -> token count
+  const dailyModel = {}; // YYYY-MM-DD -> { model: token count }
   const toolBreakdown = {}; // tool name -> count
   const msgTimes = []; // { t: epochMs, tok, cost } per deduped assistant message
   const assistantById = new Map(); // dedupe streamed rewrites by message.id
@@ -100,7 +101,11 @@ function parseSession(file) {
     const u = msg.usage;
     const tok = (u.input_tokens || 0) + (u.output_tokens || 0) + (u.cache_creation_input_tokens || 0);
     const day = (ts || '').slice(0, 10);
-    if (day) dailyTokens[day] = (dailyTokens[day] || 0) + tok;
+    if (day) {
+      dailyTokens[day] = (dailyTokens[day] || 0) + tok;
+      if (!dailyModel[day]) dailyModel[day] = {};
+      dailyModel[day][model] = (dailyModel[day][model] || 0) + tok;
+    }
     const mcost = costFor(model, {
       input: u.input_tokens || 0, output: u.output_tokens || 0,
       cacheCreation: u.cache_creation_input_tokens || 0, cacheRead: u.cache_read_input_tokens || 0,
@@ -154,6 +159,7 @@ function parseSession(file) {
     models,
     primaryModel,
     dailyTokens,
+    dailyModel,
     toolBreakdown,
     msgTimes,
   };
@@ -197,6 +203,7 @@ export function listProjects() {
     let cost = 0, toolCalls = 0, billableTokens = 0;
     const modelTokens = {};
     const daily = {};
+    const dailyModel = {};
     let lastActivity = 0;
     let liveCount = 0;
     for (const s of sessions) {
@@ -215,6 +222,10 @@ export function listProjects() {
       for (const [day, tok] of Object.entries(s.dailyTokens)) {
         daily[day] = (daily[day] || 0) + tok;
       }
+      for (const [day, mm] of Object.entries(s.dailyModel || {})) {
+        if (!dailyModel[day]) dailyModel[day] = {};
+        for (const [m, tok] of Object.entries(mm)) dailyModel[day][m] = (dailyModel[day][m] || 0) + tok;
+      }
     }
 
     projects.push({
@@ -230,6 +241,7 @@ export function listProjects() {
       tokens: totals,
       modelTokens,
       daily,
+      dailyModel,
       sessions,
     });
   }
