@@ -176,8 +176,34 @@ function decodeDirName(name) {
   return name;
 }
 
+// Memoize the full cross-project aggregation. parseSession already skips
+// re-reading unchanged files, but the aggregation below re-runs on every call —
+// and the live UI calls listProjects() from several endpoints every few seconds.
+// Key the memo on a cheap signature (each transcript's mtime+size); a single
+// stat-walk is far cheaper than re-aggregating, and it auto-invalidates the
+// instant any session is written, added, or removed.
+let projectsMemo = { sig: null, data: null };
+
+function projectsSignature() {
+  const dirs = fs.readdirSync(PROJECTS_DIR, { withFileTypes: true }).filter((d) => d.isDirectory());
+  const parts = [];
+  for (const d of dirs) {
+    const dirPath = path.join(PROJECTS_DIR, d.name);
+    let files;
+    try { files = fs.readdirSync(dirPath); } catch { continue; }
+    for (const f of files) {
+      if (!f.endsWith('.jsonl')) continue;
+      try { const st = fs.statSync(path.join(dirPath, f)); parts.push(`${d.name}/${f}:${st.mtimeMs}:${st.size}`); } catch { /* vanished mid-walk */ }
+    }
+  }
+  return parts.join('|');
+}
+
 export function listProjects() {
   if (!fs.existsSync(PROJECTS_DIR)) return [];
+  const sig = projectsSignature();
+  if (projectsMemo.sig === sig) return projectsMemo.data;
+
   const dirs = fs.readdirSync(PROJECTS_DIR, { withFileTypes: true })
     .filter((d) => d.isDirectory());
 
@@ -246,6 +272,7 @@ export function listProjects() {
     });
   }
   projects.sort((a, b) => b.lastActivity - a.lastActivity);
+  projectsMemo = { sig, data: projects };
   return projects;
 }
 
@@ -256,10 +283,19 @@ export function getProject(id) {
 // Injected/meta user entries we don't want to show as chat.
 const META_RE = /^<(command|local-command|system-reminder|user-prompt-submit|bash-)/i;
 
-// Reconstruct the human-readable conversation for one session.
+// Reconstruct the human-readable conversation for one session. Cached by
+// mtime+size: the live UI re-polls this every ~800ms, and re-reading a
+// multi-MB transcript each time is wasteful when it hasn't grown. While a
+// session streams, the file changes (size/mtime), so the cache correctly
+// refreshes; once it goes quiet, polls become a single stat.
+const chatCache = new Map(); // file -> { sig, msgs }
 export function readSessionChat(projectId, sessionId) {
   const file = path.join(PROJECTS_DIR, projectId, sessionId + '.jsonl');
-  if (!fs.existsSync(file)) return null;
+  let stat;
+  try { stat = fs.statSync(file); } catch { return null; }
+  const sig = `${stat.mtimeMs}:${stat.size}`;
+  const hit = chatCache.get(file);
+  if (hit && hit.sig === sig) return hit.msgs;
   const lines = readJsonLines(file);
   const msgs = [];
   let lastAssistantId = null;
@@ -286,5 +322,6 @@ export function readSessionChat(projectId, sessionId) {
       }
     }
   }
+  chatCache.set(file, { sig, msgs });
   return msgs;
 }
