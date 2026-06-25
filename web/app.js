@@ -1955,6 +1955,7 @@ async function renderSettings() {
   $('#crumb').textContent = 'Settings';
   const v = $('#view');
   v.innerHTML = '';
+  { const bu = brokerUrlCard(); if (bu) v.append(bu); }
   v.append(billingCard(state.overview && state.overview.plan));
   const cfg = await api('/api/config');
   v.append(budgetCard(cfg.budgets || {}));
@@ -2102,6 +2103,23 @@ async function apiFor(path, agentId, opts) {
   return res.json();
 }
 
+function brokerUrl() { return state.publicUrl || location.origin; }
+// A copyable card showing the public address machines/people connect to. Only
+// meaningful behind the broker (the local agent has no public URL).
+function brokerUrlCard() {
+  const onBroker = !!state.publicUrl || !!state.machines;
+  if (!onBroker) return null;
+  const url = brokerUrl();
+  const copyBtn = el('button', { class: 'btn ghost', style: 'flex-shrink:0;padding:7px 13px', onclick: async () => {
+    try { await navigator.clipboard.writeText(url); copyBtn.textContent = '✓ Copied'; setTimeout(() => (copyBtn.textContent = '📋 Copy'), 1500); } catch { /* */ }
+  } }, '📋 Copy');
+  return el('div', { class: 'card fade-in', style: 'margin-bottom:16px' },
+    el('div', { class: 'card-title' }, '🛰️ Broker URL', el('span', { class: 'muted' }, 'sign in + connect machines here')),
+    el('div', { style: 'display:flex;gap:10px;align-items:center;flex-wrap:wrap' },
+      el('a', { class: 'broker-url', href: url, target: '_blank', rel: 'noopener' }, url), copyBtn),
+    el('div', { class: 'q-hint', style: 'margin-top:8px' }, 'Open this on any device to use the dashboard, and use it as the broker URL when connecting a machine.'));
+}
+
 async function renderFleet() {
   $('#crumb').textContent = 'Fleet';
   const v = $('#view');
@@ -2118,6 +2136,7 @@ async function renderFleet() {
   }));
   if (state.view !== 'fleet') return; // navigated away mid-load
   v.innerHTML = '';
+  { const bu = brokerUrlCard(); if (bu) v.append(bu); }
 
   // connected-computers strip
   const strip = el('div', { class: 'fleet-machines' });
@@ -2456,6 +2475,7 @@ async function boot() {
   let status;
   try { status = await api('/api/auth/status'); } catch { status = { hasUsers: false, user: null }; }
   if (!status.user) { renderAuthGate(status); return; }
+  state.publicUrl = status.publicUrl || null;
   setOwnerFooter(status.user);
   await loadMachines();
   await refresh();

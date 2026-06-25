@@ -19,6 +19,7 @@ if (-not (Running 7878)) {
 # 2) Broker open to LAN + Funnel on 7900
 if (-not (Running 7900)) {
   $env:BROKER_HOST = '0.0.0.0'; $env:BROKER_PORT = '7900'
+  $env:BROKER_PUBLIC_URL = 'https://desktop-av0ghhf.tail26ff04.ts.net'
   Start-Process $node -ArgumentList 'broker/broker.js' -WorkingDirectory $root -WindowStyle Hidden
   Start-Sleep -Seconds 3
 }

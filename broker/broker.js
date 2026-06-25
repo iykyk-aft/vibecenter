@@ -106,7 +106,7 @@ const server = http.createServer(async (req, res) => {
 
   // ---- broker-local endpoints ----
   if (pathname === '/api/health') return sendJson(res, 200, { ok: true, broker: true, build: assetBuild() });
-  if (pathname === '/api/auth/status') { const me = currentUser(req); return sendJson(res, 200, { hasUsers: hasUsers(), user: me, agentConnected: !!(me && connectedAgentsForUser(me.id).length) }); }
+  if (pathname === '/api/auth/status') { const me = currentUser(req); return sendJson(res, 200, { hasUsers: hasUsers(), user: me, agentConnected: !!(me && connectedAgentsForUser(me.id).length), publicUrl: process.env.BROKER_PUBLIC_URL || null }); }
   if (pathname === '/api/auth/register' && req.method === 'POST') { const b = await readJson(req); const r = registerUser(b.email, b.password, b.invite); if (!r.ok) return sendJson(res, 400, r); setCookie(res, createSession(r.user.id)); return sendJson(res, 200, { ok: true, user: r.user }); }
   if (pathname === '/api/auth/login' && req.method === 'POST') { const b = await readJson(req); const me = verifyLogin(b.email, b.password); if (!me) return sendJson(res, 401, { error: 'Wrong email or password.' }); setCookie(res, createSession(me.id)); return sendJson(res, 200, { ok: true, user: me }); }
   if (pathname === '/api/auth/logout' && req.method === 'POST') { destroySession(parseCookies(req)['cc_session']); clearCookie(res); return sendJson(res, 200, { ok: true }); }
