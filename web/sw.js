@@ -1,8 +1,8 @@
 // Vibe Center service worker — makes it an installable PWA with an offline
 // shell. Network-first (so the app stays fresh + the auto-update banner still
 // works); falls back to cache when offline. Dynamic/auth routes are never cached.
-const CACHE = 'vibecenter-shell-v1';
-const SHELL = ['/', '/index.html', '/app.js', '/styles.css', '/manifest.webmanifest', '/assets/vibe.png'];
+const CACHE = 'vibecenter-shell-v2';
+const SHELL = ['/', '/index.html', '/app.js', '/qr.js', '/styles.css', '/manifest.webmanifest', '/assets/vibe.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL).catch(() => {})).then(() => self.skipWaiting()));

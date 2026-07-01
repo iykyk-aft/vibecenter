@@ -176,7 +176,14 @@ function decodeDirName(name) {
   return name;
 }
 
+// Short-lived memo: several endpoints (overview, account, recommendations)
+// call listProjects() within the same poll cycle — scan the transcript tree
+// once and share the result for a couple of seconds.
+let listMemo = null; // { at, data }
+const LIST_TTL_MS = 2000;
+
 export function listProjects() {
+  if (listMemo && Date.now() - listMemo.at < LIST_TTL_MS) return listMemo.data;
   if (!fs.existsSync(PROJECTS_DIR)) return [];
   const dirs = fs.readdirSync(PROJECTS_DIR, { withFileTypes: true })
     .filter((d) => d.isDirectory());
@@ -246,6 +253,7 @@ export function listProjects() {
     });
   }
   projects.sort((a, b) => b.lastActivity - a.lastActivity);
+  listMemo = { at: Date.now(), data: projects };
   return projects;
 }
 

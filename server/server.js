@@ -10,9 +10,11 @@ import { githubFor, repoMetrics, detectRepo } from './github.js';
 import { approvalsSummary, addRule, removeRule } from './approvals.js';
 import { getCustomApps, addApp, removeApp, syntheticProjects, detectStack } from './apps.js';
 import { ghStatus, projectsRoot, scaffoldProject } from './scaffold.js';
-import { hasUsers, registerUser, verifyLogin, createSession, destroySession, userForToken, createInvite, listInvites } from './auth.js';
+import { hasUsers, registerUser, verifyLogin, createSession, destroySession, userForToken, createInvite, listInvites, ownerLanIdentity } from './auth.js';
+import { startDiscovery, lanPeers, findPeer, selfMid, accountAuthHeader, verifyAccountHeader } from './lan.js';
 import { runQuery } from './claude.js';
 import { prettyModel, costFor } from './pricing.js';
+import { buildRecommendations, setDefaultModel } from './optimize.js';
 
 const ROOT = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '..');
 const WEB_DIR = path.join(ROOT, 'web');
@@ -35,6 +37,43 @@ function writeConfig(cfg) {
 }
 function githubToken() {
   return process.env.GITHUB_TOKEN || readConfig().githubToken || null;
+}
+
+// ---- same-network (LAN) access ---------------------------------------------
+// Non-internal IPv4 addresses of this machine — used so phones / tablets / other
+// computers on the same Wi-Fi can reach the dashboard when LAN access is on.
+function lanIPv4s() {
+  const out = [];
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const ni of list || []) if (ni.family === 'IPv4' && !ni.internal) out.push(ni.address);
+  }
+  return out;
+}
+function primaryLanIP() { return lanIPv4s()[0] || null; }
+const isPrivateIPv4 = (ip) =>
+  /^10\./.test(ip) || /^192\.168\./.test(ip) || /^169\.254\./.test(ip) ||
+  /^172\.(1[6-9]|2\d|3[01])\./.test(ip);
+
+// Opt-in: when data/config.json has "lanAccess": true we bind to the network and
+// accept same-network requests (still login-gated). Default OFF — the dashboard
+// stays loopback-only until you turn this on in Settings. Read once at startup
+// because the listen() bind host can't change without a restart.
+const LAN_ACCESS = readConfig().lanAccess === true;
+function lanUrl() {
+  const ip = primaryLanIP();
+  return LAN_ACCESS && ip ? `http://${ip}:${PORT}` : null;
+}
+// Begin announcing on the LAN + listening for same-account peers. The identity
+// (owner's derived key) may not exist yet on first run; the discovery service
+// re-checks it each tick and starts advertising once someone has signed in.
+function startLanDiscovery() {
+  startDiscovery({
+    httpPort: PORT,
+    getIdentity: () => {
+      const id = ownerLanIdentity();
+      return id ? { id: id.id, key: id.key, name: os.hostname() } : null;
+    },
+  });
 }
 
 // ---- auth helpers -----------------------------------------------------------
@@ -365,7 +404,11 @@ function accountPayload() {
 async function handleApi(req, res, pathname) {
   // ---- auth ----
   if (pathname === '/api/auth/status') {
-    return sendJson(res, 200, { hasUsers: hasUsers(), user: currentUser(req) });
+    return sendJson(res, 200, {
+      hasUsers: hasUsers(), user: currentUser(req),
+      publicUrl: readConfig().publicUrl || null,
+      lan: { active: LAN_ACCESS, ip: primaryLanIP(), port: PORT, url: lanUrl(), hasIdentity: !!ownerLanIdentity() },
+    });
   }
   if (pathname === '/api/auth/register' && req.method === 'POST') {
     const body = await readBody(req);
@@ -396,8 +439,39 @@ async function handleApi(req, res, pathname) {
     return sendJson(res, 200, overviewPayload(mergedProjects()));
   }
 
+  // Same-account machines on this LAN (auto-discovered). Only when LAN access is
+  // on — otherwise we behave like before (404 → frontend treats it as single,
+  // local-only). The broker has its own /api/machines for remote multi-machine.
+  if (pathname === '/api/machines' && req.method === 'GET') {
+    if (!LAN_ACCESS) return sendJson(res, 404, { error: 'unknown endpoint' });
+    const machines = [
+      { agentId: selfMid(), name: os.hostname() + ' · this computer', connected: true, self: true },
+      ...lanPeers().map((p) => ({ agentId: p.mid, name: p.name, connected: true, lan: true })),
+    ];
+    return sendJson(res, 200, { ok: true, mode: 'lan', machines });
+  }
+
   if (pathname === '/api/account') {
     return sendJson(res, 200, accountPayload());
+  }
+
+  // Cost-saving recommendations derived from the local transcripts.
+  if (pathname === '/api/recommendations') {
+    const cfg = readConfig();
+    return sendJson(res, 200, buildRecommendations({
+      projects: listProjects(),
+      account: accountPayload(),
+      plan: readPlan(),
+      budgets: cfg.budgets || {},
+      runs: [...activeRuns.entries()].map(([id, r]) => ({ runId: id, project: r.project, projectName: r.projectName, session: r.session, startedAt: r.startedAt })),
+    }));
+  }
+
+  // Apply a recommendation's action (currently: set the default model).
+  if (pathname === '/api/optimize' && req.method === 'POST') {
+    const body = await readBody(req);
+    if (body.action === 'set-model') return sendJson(res, 200, setDefaultModel(body.model));
+    return sendJson(res, 400, { error: 'unknown action' });
   }
 
   // Compact per-machine app list for the Fleet view: each app with its GitHub
@@ -480,7 +554,13 @@ async function handleApi(req, res, pathname) {
   if (pathname === '/api/pending') {
     const now = Date.now();
     for (const [id, p] of pending) if (now - p.ts > 5 * 60 * 1000) pending.delete(id);
-    return sendJson(res, 200, { pending: [...pending.values()].filter((p) => p.status === 'pending').sort((a, b) => a.ts - b.ts) });
+    // Include the gateway flags so the client can relax its poll rate when
+    // nothing can ever go pending (gateway off, or always-allow-all on).
+    const g = readGateway();
+    return sendJson(res, 200, {
+      pending: [...pending.values()].filter((p) => p.status === 'pending').sort((a, b) => a.ts - b.ts),
+      gateway: { enabled: g.enabled, autoAll: g.autoAll },
+    });
   }
 
   if (pathname === '/api/allowlist' && req.method === 'POST') {
@@ -504,10 +584,19 @@ async function handleApi(req, res, pathname) {
           }
         }
       }
+      if (typeof body.lanAccess === 'boolean') cfg.lanAccess = body.lanAccess;
+      if (typeof body.publicUrl === 'string') {
+        const u = body.publicUrl.trim().replace(/\/+$/, '');
+        if (u) cfg.publicUrl = u; else delete cfg.publicUrl;
+      }
       writeConfig(cfg);
-      return sendJson(res, 200, { ok: true, hasToken: !!githubToken(), budgets: cfg.budgets || {} });
+      return sendJson(res, 200, { ok: true, hasToken: !!githubToken(), budgets: cfg.budgets || {}, lanAccess: cfg.lanAccess === true, publicUrl: cfg.publicUrl || null });
     }
-    return sendJson(res, 200, { hasToken: !!githubToken(), plan: readPlan(), budgets: readConfig().budgets || {} });
+    return sendJson(res, 200, {
+      hasToken: !!githubToken(), plan: readPlan(), budgets: readConfig().budgets || {},
+      lanAccess: readConfig().lanAccess === true, lanActive: LAN_ACCESS,
+      lanIp: primaryLanIP(), port: PORT, publicUrl: readConfig().publicUrl || null,
+    });
   }
 
   if (pathname === '/api/apps') {
@@ -571,6 +660,24 @@ async function handleApi(req, res, pathname) {
     const killed = stopRuns((id, r) =>
       (body.runId && id === body.runId) || (body.project && r.project === body.project));
     return sendJson(res, 200, { ok: true, killed });
+  }
+
+  // End EVERYTHING active in one shot: all in-dashboard Workbench runs plus
+  // every external (VS Code / terminal) session whose process we have on record.
+  // External sessions without a recorded PID are reported as `noPid` (they can't
+  // be ended remotely until they've run a tool once).
+  if (pathname === '/api/stop-all' && req.method === 'POST') {
+    const killedRuns = stopRuns(() => true);
+    let killedExternal = 0, noPid = 0;
+    for (const p of listProjects()) {
+      for (const s of p.sessions) {
+        if (!s.active) continue;
+        const info = sessionPid(s.id);
+        if (!info) { noPid++; continue; }
+        if (killSessionPid(info.pid).ok) killedExternal++;
+      }
+    }
+    return sendJson(res, 200, { ok: true, killedRuns, killedExternal, noPid });
   }
 
   // End an EXTERNAL (VS Code / terminal) session by killing its claude process.
@@ -642,6 +749,30 @@ async function handleApi(req, res, pathname) {
   return sendJson(res, 404, { error: 'unknown endpoint' });
 }
 
+// Relay an API request to a linked LAN peer's agent, authenticated with our
+// shared account key. The browser only ever talks to this (local) agent; we act
+// as the trusted proxy to same-account machines on the network.
+function proxyToPeer(req, res, peer) {
+  const chunks = [];
+  req.on('data', (c) => chunks.push(c));
+  req.on('end', () => {
+    const body = Buffer.concat(chunks);
+    let target; try { target = new URL(req.url, peer.url); } catch { return sendJson(res, 502, { error: 'bad peer url' }); }
+    const headers = { 'X-CC-Account': accountAuthHeader() || '' };
+    if (req.headers['content-type']) headers['content-type'] = req.headers['content-type'];
+    if (body.length) headers['content-length'] = body.length;
+    const preq = http.request(target, { method: req.method, headers }, (pres) => {
+      res.writeHead(pres.statusCode || 502, { 'Content-Type': pres.headers['content-type'] || 'application/json' });
+      pres.pipe(res);
+    });
+    preq.on('error', () => { if (!res.headersSent) sendJson(res, 502, { error: 'peer unreachable' }); });
+    preq.setTimeout(30000, () => { try { preq.destroy(); } catch { /* */ } });
+    if (body.length) preq.write(body);
+    preq.end();
+  });
+  req.on('error', () => { if (!res.headersSent) sendJson(res, 502, { error: 'request error' }); });
+}
+
 // Stream a headless Claude query back as newline-delimited JSON events.
 function streamQuery(res, req, cwd, prompt, model, resumeId, permissionMode, meta = {}) {
   res.writeHead(200, {
@@ -701,14 +832,24 @@ function serveStatic(req, res, pathname) {
 //    malicious website in your browser from POSTing to the API (CSRF).
 // Local tools (curl, the hook) send no Origin and are allowed.
 const ALLOWED_HOSTS = new Set([`localhost:${PORT}`, `127.0.0.1:${PORT}`, `[::1]:${PORT}`]);
+const LOOPBACK_HOSTS = ['localhost', '127.0.0.1', '[::1]', '::1'];
+// With LAN access on we additionally accept our own private-network address on
+// the right port — that's the whole point (serving same-Wi-Fi devices) — but
+// nothing else, so DNS-rebinding from a public name is still blocked.
+function hostOk(host) {
+  if (ALLOWED_HOSTS.has(host)) return true;
+  if (!LAN_ACCESS) return false;
+  const m = host.match(/^([0-9.]+):(\d+)$/);
+  return !!m && m[2] === String(PORT) && isPrivateIPv4(m[1]);
+}
 function securityReject(req) {
   const host = (req.headers.host || '').toLowerCase();
-  if (!ALLOWED_HOSTS.has(host)) return 'host';
+  if (!hostOk(host)) return 'host';
   const origin = req.headers.origin;
   if (origin) {
     let o;
     try { o = new URL(origin); } catch { return 'origin'; }
-    const okHost = ['localhost', '127.0.0.1', '[::1]', '::1'].includes(o.hostname);
+    const okHost = LOOPBACK_HOSTS.includes(o.hostname) || (LAN_ACCESS && isPrivateIPv4(o.hostname));
     if (!okHost || o.port !== String(PORT)) return 'origin';
   }
   return null;
@@ -720,10 +861,20 @@ const server = http.createServer(async (req, res) => {
   try {
     if (pathname.startsWith('/api/')) {
       // Once an owner account exists, every data/control endpoint needs a valid
-      // session (the SPA shell + auth/health/gateway-hook stay open).
+      // session — OR a valid same-account peer HMAC (a linked LAN machine relaying
+      // on your behalf), OR the loopback internal token (the broker bridge / hooks).
       if (hasUsers() && !AUTH_EXEMPT.has(pathname) && !currentUser(req)
-          && req.headers['x-cc-internal'] !== INTERNAL_TOKEN) {
+          && req.headers['x-cc-internal'] !== INTERNAL_TOKEN
+          && !verifyAccountHeader(req.headers['x-cc-account'])) {
         return sendJson(res, 401, { error: 'Sign in required.' });
+      }
+      // Viewing a linked LAN peer: relay this request to that machine's agent
+      // (authenticated with our shared account key). Never relay the machine
+      // list or auth — those are answered locally.
+      const peerMid = req.headers['x-cc-machine'];
+      if (peerMid && peerMid !== selfMid() && pathname !== '/api/machines' && !pathname.startsWith('/api/auth/')) {
+        const peer = findPeer(peerMid);
+        if (peer) return proxyToPeer(req, res, peer);
       }
       return await handleApi(req, res, pathname);
     }
@@ -741,10 +892,14 @@ server.on('error', (e) => {
   throw e;
 });
 
-// Bind to loopback only — never expose the dashboard (or the query/approval
-// endpoints) to the local network.
-server.listen(PORT, '127.0.0.1', () => {
+// Loopback only by default. When LAN access is opted-in (Settings → Network),
+// bind to all interfaces so same-network devices can reach the (login-gated)
+// dashboard — and start same-account peer discovery on the local network.
+const BIND_HOST = LAN_ACCESS ? '0.0.0.0' : '127.0.0.1';
+server.listen(PORT, BIND_HOST, () => {
   console.log(`\n  ⚡ Vibe Center running`);
-  console.log(`  → http://localhost:${PORT}\n`);
-  console.log(`  GitHub token: ${githubToken() ? 'configured' : 'not set (add in Settings)'}\n`);
+  console.log(`  → http://localhost:${PORT}`);
+  if (lanUrl()) console.log(`  → ${lanUrl()}  (same-network devices)`);
+  console.log(`\n  GitHub token: ${githubToken() ? 'configured' : 'not set (add in Settings)'}\n`);
+  if (LAN_ACCESS) startLanDiscovery();
 });

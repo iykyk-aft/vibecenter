@@ -230,9 +230,16 @@ Costs are estimates derived from transcript usage — treat them as directional.
 Vibe Center handles local data (transcripts, a GitHub token, your permission allowlist) and can run Claude
 in your repos, so it's locked down:
 
-- **Loopback only & account-gated.** The agent binds to `127.0.0.1`; every data/control endpoint requires a
-  session once an owner exists (the local hook endpoints are the only loopback exemptions).
-- **DNS-rebinding & CSRF protection.** Non-loopback `Host` headers and cross-origin `Origin`s are rejected.
+- **Loopback by default & account-gated.** The agent binds to `127.0.0.1`; every data/control endpoint requires a
+  session once an owner exists (the local hook endpoints are the only loopback exemptions). **Same-network (LAN)
+  access is opt-in** (Settings → Network access): only then does it bind to the network, and only private-LAN
+  addresses on the right port are accepted — still fully login-gated.
+- **DNS-rebinding & CSRF protection.** Non-loopback `Host` headers and cross-origin `Origin`s are rejected (with
+  LAN access on, your own private-network address is additionally allowed; public names are still blocked).
+- **Same-account auto-link.** Two computers signed into the same account (same email + password → an identical
+  *derived* key, never the salted password hash) discover each other over the LAN and link automatically. Only a
+  fingerprint and short-lived HMACs of that key cross the wire — the key itself never leaves the machine — and the
+  local agent proxies to peers so the browser only ever talks to its own loopback origin.
 - **Secrets never reach the browser.** The GitHub token and password hashes live only under `data/`
   (gitignored); the API only reports whether a token is *set*.
 - **Sandboxed runs.** Claude only runs in folders Vibe Center already tracks; prompts are passed as process

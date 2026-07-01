@@ -767,6 +767,158 @@ async function renderAccount() {
         statChip('📖', 'File Reads', a.derived.reads)))));
 }
 
+// ---- Savings (cost optimizer) ---------------------------------------------
+const SEV = {
+  high: { label: 'High impact', cls: 'sev-high' },
+  med: { label: 'Worth doing', cls: 'sev-med' },
+  low: { label: 'Nice to have', cls: 'sev-low' },
+  info: { label: 'FYI', cls: 'sev-low' },
+};
+const dismissedRecs = () => { try { return JSON.parse(localStorage.getItem('cc-dismissed') || '[]'); } catch { return []; } };
+function toggleDismiss(id) {
+  const cur = new Set(dismissedRecs());
+  cur.has(id) ? cur.delete(id) : cur.add(id);
+  localStorage.setItem('cc-dismissed', JSON.stringify([...cur]));
+  renderSavings();
+}
+
+async function renderSavings() {
+  $('#crumb').textContent = 'Save';
+  const v = $('#view');
+  v.innerHTML = '<div class="empty"><div class="big">⏳</div>Analyzing your usage…</div>';
+  let d;
+  try { d = await api('/api/recommendations'); } catch { v.innerHTML = '<div class="empty">Could not load recommendations.</div>'; return; }
+  v.innerHTML = '';
+  const metered = d.metered;
+  const dismissed = new Set(dismissedRecs());
+  const shown = d.recommendations.filter((r) => !dismissed.has(r.id));
+
+  // header KPIs
+  v.append(el('div', { class: 'kpi-grid' },
+    kpi(metered ? 'Est. Monthly Savings' : 'Est. Monthly Value', '💰',
+      d.estMonthlySavings > 0 ? fmtCost(d.estMonthlySavings) : '—',
+      d.estMonthlySavings > 0 ? 'if you apply the top tip' : 'looking lean already', 'neon'),
+    kpi(metered ? 'Lifetime Spend' : 'API-Equiv. Value', '💸', fmtCost(d.totalCost), planName(d.plan), 'pink'),
+    kpi('Default Model', '🎚️', d.currentModel ? d.currentModel[0].toUpperCase() + d.currentModel.slice(1) : 'Opus',
+      d.currentModel ? 'set via Save screen' : 'app default'),
+    kpi('Active Tips', '🧩', String(shown.length), dismissed.size ? `${dismissed.size} dismissed` : null)));
+
+  if (!metered) {
+    v.append(el('div', { class: 'card fade-in opt-banner' },
+      el('div', { class: 'card-title' }, '💡 You\'re on ' + planName(d.plan)),
+      el('p', { class: 'opt-note' },
+        'Dollar figures here are the metered-API equivalent of your token usage — not money charged. On a subscription your real lever is staying under rate limits, so treat these as "use your quota more efficiently" tips, not a bill.')));
+  }
+
+  if (!shown.length) {
+    v.append(el('div', { class: 'card fade-in' },
+      el('div', { class: 'empty' },
+        el('div', { class: 'big' }, '✅'),
+        dismissed.size ? 'All caught up — you\'ve dismissed the rest.' : 'No cost issues found. Your usage looks efficient!')));
+  }
+  for (const r of shown) v.append(recCard(r, metered));
+
+  // dismissed footer (restore)
+  if (dismissed.size) {
+    const hidden = d.recommendations.filter((r) => dismissed.has(r.id));
+    v.append(el('div', { class: 'card fade-in', style: 'opacity:.7' },
+      el('div', { class: 'card-title' }, 'Dismissed', el('span', { class: 'muted' }, 'click to restore')),
+      el('div', { class: 'stat-chips' }, ...hidden.map((r) =>
+        el('button', { class: 'opt-chip', onclick: () => toggleDismiss(r.id) }, r.icon + ' ' + r.title + '  ↩')))));
+  }
+}
+
+function recCard(r, metered) {
+  const sev = SEV[r.severity] || SEV.low;
+  const head = el('div', { class: 'opt-head' },
+    el('div', { class: 'opt-title' },
+      el('span', { class: 'opt-icon' }, r.icon || '💡'), r.title),
+    el('div', { class: 'opt-tags' },
+      el('span', { class: 'opt-sev ' + sev.cls }, sev.label),
+      r.estSavings ? el('span', { class: 'opt-save' }, '~' + fmtCost(r.estSavings) + (metered ? '/mo' : '/mo value')) : null));
+
+  const body = el('div', { class: 'opt-body' },
+    r.metric ? el('div', { class: 'opt-metric' }, r.metric) : null,
+    el('p', { class: 'opt-detail' }, r.detail),
+    r.estNote ? el('div', { class: 'opt-estnote' }, '* ' + r.estNote) : null);
+
+  // per-item lists (sessions to end / open)
+  if (r.list && r.list.length) {
+    const listEl = el('div', { class: 'opt-list' });
+    for (const it of r.list) {
+      listEl.append(el('div', { class: 'opt-row' },
+        el('div', { class: 'opt-row-main' },
+          el('div', { class: 'opt-row-label' }, it.label),
+          it.sub ? el('div', { class: 'opt-row-sub' }, it.sub) : null),
+        actionBtn(it.action, 'rm-btn')));
+    }
+    body.append(listEl);
+  }
+
+  // main action buttons
+  if (r.actions && r.actions.length) {
+    body.append(el('div', { class: 'opt-actions' }, ...r.actions.map((a) => actionBtn(a))));
+  }
+  if (r.footnote) body.append(el('div', { class: 'opt-foot' }, r.footnote));
+
+  const card = el('div', { class: 'card fade-in opt-card ' + sev.cls },
+    head, body,
+    el('button', { class: 'opt-dismiss', title: 'Dismiss', onclick: () => toggleDismiss(r.id) }, '✕'));
+  return card;
+}
+
+function actionBtn(a, extraCls = '') {
+  if (!a) return null;
+  const cls = 'btn ' + (a.subtle ? 'btn-ghost ' : a.primary ? '' : 'btn-soft ') + extraCls;
+  const b = el('button', { class: cls.trim() }, a.label);
+  if (a.disabled) { b.disabled = true; b.classList.add('is-on'); b.textContent = '✓ ' + a.label; return b; }
+  b.addEventListener('click', () => runAction(a, b));
+  return b;
+}
+
+async function runAction(a, btn) {
+  const orig = btn.textContent;
+  btn.disabled = true; btn.textContent = '…';
+  try {
+    if (a.kind === 'set-model') {
+      const r = await api('/api/optimize', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'set-model', model: a.model }) });
+      if (!r.ok) throw new Error(r.error || 'failed');
+      return renderSavings();
+    }
+    if (a.kind === 'set-budget') {
+      const r = await api('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ budgets: { day: a.day } }) });
+      if (!r.ok) throw new Error('failed');
+      return renderSavings();
+    }
+    if (a.kind === 'end-session') {
+      const r = await api('/api/stop-session', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session: a.session }) });
+      if (r.error) { btn.textContent = '⚠'; btn.title = r.error; btn.disabled = false; return; }
+      btn.textContent = '✓ ended'; await refresh(); return;
+    }
+    if (a.kind === 'end-run') {
+      await api('/api/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ runId: a.runId }) });
+      btn.textContent = '✓ ended'; await refresh(); setTimeout(renderSavings, 700); return;
+    }
+    if (a.kind === 'end-all') {
+      btn.disabled = true; btn.textContent = 'ending…';
+      const r = await api('/api/stop-all', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+      const n = (r.killedRuns || 0) + (r.killedExternal || 0);
+      btn.textContent = `✓ ended ${n}` + (r.noPid ? ` · ${r.noPid} need a tool run` : '');
+      if (r.noPid) btn.title = `${r.noPid} external session(s) had no recorded process and were left running — they can be ended once they've run a tool.`;
+      await refresh(); setTimeout(renderSavings, 1200); return;
+    }
+    if (a.kind === 'navigate') return navView(a.view);
+    if (a.kind === 'open-project') return navProject(a.project);
+  } catch (e) {
+    btn.textContent = '⚠ ' + (e.message || 'error');
+    setTimeout(() => { btn.disabled = false; btn.textContent = orig; }, 2500);
+  }
+}
+
 // ---- session chat modal --------------------------------------------------
 function chatBubble(m) {
   const wrap = el('div', { class: 'chat-msg ' + (m.role === 'user' ? 'cb-user' : 'cb-assistant') });
@@ -1528,11 +1680,6 @@ async function alwaysAllow({ project, autoAll, id }) {
 }
 
 // ---- in-app approval prompts (pop up on any screen) ------------------------
-function startApprovalWatch() {
-  clearInterval(state.approvalWatchTimer);
-  pollApprovalPrompts();
-  state.approvalWatchTimer = setInterval(pollApprovalPrompts, 2000);
-}
 function approvalDock() {
   let d = $('#approvalDock');
   if (!d) { d = el('div', { id: 'approvalDock', class: 'approval-dock' }); document.body.append(d); }
@@ -1541,6 +1688,7 @@ function approvalDock() {
 async function pollApprovalPrompts() {
   let data;
   try { data = await api('/api/pending'); } catch { return; }
+  if (data && data.gateway) state.gatewayLite = data.gateway; // drives the adaptive poll rate
   state.approvalToasts = state.approvalToasts || {};
   const pend = (data && data.pending) || [];
   const ids = new Set(pend.map((p) => p.id));
@@ -1811,8 +1959,9 @@ async function inviteCard() {
     }
   };
   render(data.invites || []);
-  const origin = location.origin;
-  const isPublic = !/^https?:\/\/(localhost|127\.0\.0\.1|\[?::1)/.test(origin);
+  const base = reachableUrl() || location.origin;       // where invitees sign up
+  const connectBase = brokerBaseUrl() || '<broker-url>'; // where their machine bridges
+  const isPublic = !!state.publicUrl || !isLoopbackHost(location.hostname);
   const share = el('textarea', { class: 'q-input', rows: '11', readonly: 'readonly', style: 'width:100%;display:none;font-size:12px;margin-top:12px' });
   const msg = el('div', { style: 'font-size:12.5px;margin-top:10px;color:var(--good)' });
   const inviteText = (code) =>
@@ -1823,13 +1972,13 @@ async function inviteCard() {
    Unzip it (you'll get a "vibecenter-main" folder).  (No Node yet? https://nodejs.org)
 
 2) Sign up here with your invite code:
-   ${origin}
+   ${base}
    invite code:  ${code}
 
 3) Connect your computer — open a terminal in the unzipped folder and run:
    npm start
    (then, with the token from Settings → Connect a machine:)
-   node broker/connect.mjs YOUR_TOKEN ${origin}
+   node broker/connect.mjs YOUR_TOKEN ${connectBase}
 
 Your data and Claude stay on your computer — Vibe Center just shows your dashboard here.`;
   const copyBtn = el('button', { class: 'btn ghost', style: 'margin-left:8px;display:none', onclick: async () => {
@@ -1881,7 +2030,6 @@ function renderGuide() {
       el('div', { class: 'card-title' }, '👋 Welcome to Vibe Center!'),
       el('p', { class: 'guide-intro', style: 'margin:0' }, 'You’re all set up. Start with “Connect your computer” below — it’s a one-time step. Everything runs on your own machine; this dashboard just shows it.')));
   }
-  const origin = location.origin;
   const C = (t) => el('code', { class: 'guide-code' }, t);
   const section = (icon, title, intro, steps) => el('div', { class: 'card fade-in guide-card' },
     el('div', { class: 'card-title' }, icon + '  ' + title),
@@ -1897,7 +2045,7 @@ function renderGuide() {
       ['Download the app and unzip it. (No Node.js? Get it at ', el('a', { href: 'https://nodejs.org', target: '_blank' }, 'nodejs.org'), '.)'],
       ['Open a terminal in the unzipped folder and run ', C('npm start'), ' — this starts your agent.'],
       ['Go to ', el('b', {}, 'Settings → Connect a machine'), ', generate a token, and run the command it shows:'],
-      [C('node broker/connect.mjs <your-token> ' + origin)],
+      [C('node broker/connect.mjs <your-token> ' + (brokerBaseUrl() || '<broker-url>'))],
       'Your dashboard now shows your machine. Leave that terminal running while you use it.',
     ]),
 
@@ -1935,12 +2083,14 @@ function renderGuide() {
     ]),
 
     (() => {
-      const card = section('📱', 'Install on your phone', 'Use it like a native app.', [
-        ['Open this site’s URL on your phone: ', C(origin)],
-        [el('b', {}, 'iPhone (Safari):'), ' Share → Add to Home Screen.'],
-        [el('b', {}, 'Android (Chrome):'), ' menu → Install app, or tap below.'],
-        'It launches full-screen — approvals and metrics in your pocket.',
-      ]);
+      const card = el('div', { class: 'card fade-in guide-card' },
+        el('div', { class: 'card-title' }, '📱  Install on your phone'),
+        el('p', { class: 'guide-intro' }, 'Use it like a native app. Open this address on your phone (same Wi-Fi), or scan the code:'),
+        deviceUrlBlock(),
+        el('ol', { class: 'guide-steps' },
+          el('li', {}, el('b', {}, 'iPhone (Safari):'), ' Share → Add to Home Screen.'),
+          el('li', {}, el('b', {}, 'Android (Chrome):'), ' menu → Install app, or tap below.'),
+          el('li', {}, 'It launches full-screen — approvals and metrics in your pocket.')));
       card.append(installButton());
       return card;
     })(),
@@ -1958,6 +2108,7 @@ async function renderSettings() {
   { const bu = brokerUrlCard(); if (bu) v.append(bu); }
   v.append(billingCard(state.overview && state.overview.plan));
   const cfg = await api('/api/config');
+  v.append(networkCard(cfg));
   v.append(budgetCard(cfg.budgets || {}));
   v.append(el('div', { class: 'card fade-in', style: 'max-width:640px' },
     el('div', { class: 'card-title' }, 'GitHub Integration'),
@@ -2024,10 +2175,33 @@ async function removeCustomApp(id) {
   renderSettings();
 }
 
+// Same-account computers found on the local network — they link automatically,
+// so this card is purely informational (no tokens, no buttons).
+function lanMachinesCard(machines) {
+  const peers = machines.filter((m) => m.lan);
+  const self = machines.find((m) => m.self);
+  const rows = el('div', { style: 'margin-top:6px' });
+  rows.append(el('div', { class: 'rule' },
+    el('span', {}, el('span', { class: 'chip-dot' }), '  ', (self && self.name) || 'This computer',
+      el('span', { style: 'color:var(--neon2);font-size:11px;margin-left:8px' }, 'this computer'))));
+  for (const p of peers) rows.append(el('div', { class: 'rule' },
+    el('span', {}, '🛜  ', p.name, el('span', { style: 'color:var(--good);font-size:11px;margin-left:8px' }, 'linked'))));
+  if (!peers.length) rows.append(el('div', { class: 'empty', style: 'padding:14px;text-align:left' },
+    'No other computers found on this network yet. Sign into Vibe Center on another computer with the ',
+    el('b', {}, 'same email + password'), ' (with Network access ON) and it links here automatically.'));
+  return el('div', { class: 'card fade-in', style: 'max-width:640px;margin-top:18px' },
+    el('div', { class: 'card-title' }, '🖥️ Computers on this account', el('span', { class: 'muted' }, 'same Wi-Fi · auto-linked')),
+    el('p', { style: 'color:var(--muted);font-size:13px;line-height:1.7;margin:2px 0 4px' },
+      'Any computer signed into this account on your network appears here automatically — no tokens or URLs. Switch between them with the ',
+      el('b', {}, 'Machine'), ' picker in the sidebar, or see them all in ', el('b', {}, 'Fleet'), '.'),
+    rows);
+}
+
 // ---- machines card (broker only) -------------------------------------------
 async function machinesCard() {
   let r; try { r = await api('/api/machines'); } catch { r = null; }
   if (!r || !r.ok || !Array.isArray(r.machines)) return null; // local agent → no card
+  if (r.mode === 'lan') return lanMachinesCard(r.machines); // same-account peers auto-link; no tokens
   state.machines = r.machines;
   const list = el('div', { id: 'machineList', style: 'margin-top:6px' });
   const out = el('div', { id: 'connectOut', style: 'margin-top:12px' });
@@ -2064,7 +2238,7 @@ async function addMachine(out, renderList) {
   out.append(el('div', { style: 'color:var(--muted);font-size:13px;line-height:1.7' },
     'On ', el('strong', {}, r.name), ', start the agent (', el('code', {}, 'npm start'), '), then run the bridge with this one-time token:',
     el('div', { style: 'margin:10px 0;padding:12px 14px;background:rgba(0,0,0,.3);border-radius:10px;font-family:monospace;color:var(--neon2);word-break:break-all' },
-      'node broker/connect.mjs ' + r.token + ' ' + location.origin),
+      'node broker/connect.mjs ' + r.token + ' ' + (brokerBaseUrl() || '<broker-url>')),
     el('div', { style: 'color:var(--warn);font-size:12px' }, 'Copy it now — the token is shown only once.')));
 }
 async function renameMachine(m, renderList) {
@@ -2080,6 +2254,44 @@ async function removeMachine(m, renderList) {
   const fresh = await api('/api/machines'); state.machines = fresh.machines;
   if (!state.machineId) { const c = fresh.machines.find((x) => x.connected) || fresh.machines[0]; state.machineId = c ? c.agentId : null; }
   renderList(fresh.machines); renderMachineSwitcher();
+}
+
+// Network (LAN) access toggle: lets same-Wi-Fi devices reach the dashboard and
+// turns on same-account auto-discovery. Binding changes need a restart to apply.
+function networkCard(cfg) {
+  const on = cfg.lanAccess === true;       // desired (config)
+  const active = cfg.lanActive === true;   // running (this process)
+  const url = cfg.lanIp ? `http://${cfg.lanIp}:${cfg.port}` : null;
+  const pending = on !== active;
+  const card = el('div', { class: 'card fade-in', style: 'max-width:640px' },
+    el('div', { class: 'card-title' }, '🌐 Network access (LAN)',
+      el('span', { class: on ? 'net-pill on' : 'net-pill' }, on ? '● ON' : '○ OFF')),
+    el('p', { style: 'color:var(--muted);font-size:13px;line-height:1.7' },
+      'By default the dashboard is reachable only from this computer. Turn this on to let phones, tablets, or other computers on the ',
+      el('b', {}, 'same Wi-Fi/network'), ' open it', url ? [' at ', el('code', {}, url)] : ' (no network address detected yet)', ' — and to ',
+      el('b', {}, 'auto-link other computers signed into this account'), '. It stays login-gated; leave it off on untrusted networks.'));
+  if (pending) card.append(el('div', { class: 'lan-warn', style: 'margin-bottom:12px' },
+    '↻ Saved — restart the agent to ' + (on ? 'start' : 'stop') + ' network access.'));
+  // An account created before auto-discovery existed has no derived key until the
+  // next sign-in — without it this computer can't broadcast its account identity.
+  if (active && state.lan && state.lan.hasIdentity === false) card.append(el('div', { class: 'lan-warn', style: 'margin-bottom:12px' },
+    '🔑 Sign out and back in once so this computer can auto-link with your other machines (the account key is derived from your password).'));
+  const btn = el('button', { class: 'btn' + (on ? ' stop' : ''), onclick: () => toggleLan(!on, btn) },
+    on ? 'Turn OFF network access' : 'Turn ON network access');
+  card.append(btn);
+  if (active && url) {
+    const q = qrCard(url);
+    card.append(el('div', { style: 'margin-top:16px;display:flex;gap:18px;align-items:center;flex-wrap:wrap' },
+      el('div', { style: 'flex:1;min-width:240px' }, copyableUrl(url),
+        el('div', { class: 'q-hint', style: 'margin-top:8px' }, 'Scan or open this on a phone on the same Wi-Fi.')), q));
+  }
+  return card;
+}
+async function toggleLan(enable, btn) {
+  if (!confirm((enable ? 'Turn ON' : 'Turn OFF') + ' network access? The agent will restart to apply it (a few seconds).')) return;
+  btn.disabled = true; btn.textContent = '…';
+  await api('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lanAccess: enable }) });
+  restartAndReload(btn); // binding only changes on restart
 }
 
 async function saveToken() {
@@ -2103,21 +2315,66 @@ async function apiFor(path, agentId, opts) {
   return res.json();
 }
 
-function brokerUrl() { return state.publicUrl || location.origin; }
-// A copyable card showing the public address machines/people connect to. Only
-// meaningful behind the broker (the local agent has no public URL).
-function brokerUrlCard() {
-  const onBroker = !!state.publicUrl || !!state.machines;
-  if (!onBroker) return null;
-  const url = brokerUrl();
+const isLoopbackHost = (h) => h === 'localhost' || h === '::1' || /^127\./.test(h) || /^\[?::1\]?$/.test(h);
+// A URL OTHER devices can open to reach this dashboard. Order: the address you're
+// already on (if it isn't loopback) → a configured broker URL → this machine's
+// LAN URL. null when nothing reachable is available yet.
+function reachableUrl() {
+  if (!isLoopbackHost(location.hostname)) return location.origin;
+  if (state.publicUrl) return state.publicUrl;
+  if (state.lan && state.lan.url) return state.lan.url;
+  return null;
+}
+// Base a remote machine bridges to a BROKER with — never a LAN address.
+function brokerBaseUrl() {
+  if (!isLoopbackHost(location.hostname)) return location.origin;
+  return state.publicUrl || null;
+}
+
+function copyableUrl(url) {
   const copyBtn = el('button', { class: 'btn ghost', style: 'flex-shrink:0;padding:7px 13px', onclick: async () => {
     try { await navigator.clipboard.writeText(url); copyBtn.textContent = '✓ Copied'; setTimeout(() => (copyBtn.textContent = '📋 Copy'), 1500); } catch { /* */ }
   } }, '📋 Copy');
+  return el('div', { style: 'display:flex;gap:10px;align-items:center;flex-wrap:wrap' },
+    el('a', { class: 'broker-url', href: url, target: '_blank', rel: 'noopener' }, url), copyBtn);
+}
+// Best-effort local QR (no network). Returns null if the generator is missing or
+// the URL is too long — callers always still show the copyable URL.
+function qrCard(url) {
+  try {
+    const svg = window.CCQR && window.CCQR.svg(url, { size: 150 });
+    if (!svg) return null;
+    return el('div', { class: 'qr-box', html: svg });
+  } catch { return null; }
+}
+function noReachWarning() {
+  return el('div', { class: 'lan-warn' },
+    '⚠ ', el('b', {}, 'No address other devices can reach yet.'), ' Turn on ',
+    el('b', {}, 'Network access (LAN)'), ' in Settings to connect phones/tablets on the same Wi-Fi — or set a Broker URL for access anywhere.');
+}
+// URL + QR block, or the clear warning when nothing is reachable.
+function deviceUrlBlock({ withQr = true } = {}) {
+  const url = reachableUrl();
+  if (!url) return noReachWarning();
+  const wrap = el('div', {}, copyableUrl(url));
+  if (withQr) { const q = qrCard(url); if (q) wrap.append(q); }
+  return wrap;
+}
+// Card for Settings/Fleet: how to reach this dashboard from other devices.
+function brokerUrlCard() {
+  const url = reachableUrl();
+  if (!url) return null;
+  const viaBroker = !!state.publicUrl || !isLoopbackHost(location.hostname);
+  const q = qrCard(url);
   return el('div', { class: 'card fade-in', style: 'margin-bottom:16px' },
-    el('div', { class: 'card-title' }, '🛰️ Broker URL', el('span', { class: 'muted' }, 'sign in + connect machines here')),
-    el('div', { style: 'display:flex;gap:10px;align-items:center;flex-wrap:wrap' },
-      el('a', { class: 'broker-url', href: url, target: '_blank', rel: 'noopener' }, url), copyBtn),
-    el('div', { class: 'q-hint', style: 'margin-top:8px' }, 'Open this on any device to use the dashboard, and use it as the broker URL when connecting a machine.'));
+    el('div', { class: 'card-title' }, viaBroker ? '🛰️ Broker URL' : '🌐 Reach on your network',
+      el('span', { class: 'muted' }, viaBroker ? 'sign in + connect machines here' : 'open on same-Wi-Fi devices')),
+    el('div', { style: 'display:flex;gap:18px;align-items:center;flex-wrap:wrap' },
+      el('div', { style: 'flex:1;min-width:240px' },
+        copyableUrl(url),
+        el('div', { class: 'q-hint', style: 'margin-top:8px' },
+          'Open this on any device to use the dashboard' + (viaBroker ? ', and use it as the broker URL when connecting a machine.' : ' on your network.'))),
+      q));
 }
 
 async function renderFleet() {
@@ -2289,6 +2546,7 @@ function navView(view) {
   else if (view === 'fleet') renderFleet();
   else if (view === 'workbench') renderWorkbench();
   else if (view === 'account') renderAccount();
+  else if (view === 'savings') renderSavings();
   else if (view === 'approvals') renderApprovals();
   else if (view === 'settings') renderSettings();
   else if (view === 'guide') renderGuide();
@@ -2355,14 +2613,14 @@ function showUpdateBanner() {
     el('button', { class: 'update-x', title: 'Later', onclick: () => bar.remove() }, '✕'));
   document.body.append(bar);
 }
-async function applyUpdate(btn) {
-  btn.disabled = true; btn.textContent = '⏳ Restarting…';
-  // Ask the agent to restart; if that isn't available (e.g. via the broker), a
-  // plain reload still picks up web changes.
+async function applyUpdate(btn) { return restartAndReload(btn); }
+// Ask the agent to restart, then reload into the fresh server once it's back. If
+// restart isn't available (e.g. via the broker), a plain reload picks up web changes.
+async function restartAndReload(btn) {
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Restarting…'; }
   let restarting = false;
   try { const r = await api('/api/restart', { method: 'POST' }); restarting = !!(r && r.ok); } catch { /* */ }
   if (!restarting) { location.reload(); return; }
-  // Wait for the fresh server to come back, then reload into it.
   const started = Date.now();
   const poll = async () => {
     try {
@@ -2380,8 +2638,9 @@ async function applyUpdate(btn) {
 // a 404 ('unknown endpoint'), which we treat as "single local machine".
 async function loadMachines() {
   let r; try { r = await api('/api/machines'); } catch { r = null; }
-  if (!r || !r.ok || !Array.isArray(r.machines)) { state.machines = null; state.machineId = null; renderMachineSwitcher(); return; }
+  if (!r || !r.ok || !Array.isArray(r.machines)) { state.machines = null; state.machinesMode = null; state.machineId = null; renderMachineSwitcher(); return; }
   state.machines = r.machines;
+  state.machinesMode = r.mode || 'broker';
   const ids = r.machines.map((m) => m.agentId);
   if (!state.machineId || !ids.includes(state.machineId)) {
     const conn = r.machines.find((m) => m.connected);
@@ -2394,7 +2653,7 @@ function renderMachineSwitcher() {
   // Hide the picker when there's nothing to switch between (local or single machine).
   if (!state.machines || state.machines.length < 2) return;
   const sel = el('select', { class: 'machine-select', onchange: (e) => switchMachine(e.target.value) },
-    ...state.machines.map((m) => el('option', { value: m.agentId }, (m.connected ? '● ' : '○ ') + m.name)));
+    ...state.machines.map((m) => el('option', { value: m.agentId }, (m.lan ? '🛜 ' : m.connected ? '● ' : '○ ') + m.name)));
   sel.value = state.machineId || '';
   const row = el('div', { id: 'machineRow', class: 'machine-row' }, el('span', { class: 'machine-label' }, 'Machine'), sel);
   const foot = $('.sidebar-footer');
@@ -2411,7 +2670,7 @@ function switchMachine(agentId) {
 function closeAuthGate() { const g = $('#authGate'); if (g) g.remove(); }
 function lockApp() {
   if ($('#authGate')) return;
-  clearInterval(state.refreshTimer); clearInterval(state.updateTimer); clearInterval(state.approvalsTimer); clearInterval(state.approvalWatchTimer);
+  stopPolling();
   fetch('/api/auth/status').then((r) => r.json()).then(renderAuthGate).catch(() => renderAuthGate({ hasUsers: true }));
 }
 async function logout() {
@@ -2476,6 +2735,7 @@ async function boot() {
   try { status = await api('/api/auth/status'); } catch { status = { hasUsers: false, user: null }; }
   if (!status.user) { renderAuthGate(status); return; }
   state.publicUrl = status.publicUrl || null;
+  state.lan = status.lan || null;
   setOwnerFooter(status.user);
   await loadMachines();
   await refresh();
@@ -2483,11 +2743,55 @@ async function boot() {
   try { if (localStorage.getItem('cc.welcome')) { localStorage.removeItem('cc.welcome'); firstRun = true; } } catch { /* */ }
   state.welcome = firstRun;
   navView(firstRun ? 'guide' : 'overview');
-  clearInterval(state.refreshTimer); state.refreshTimer = setInterval(refresh, 5000);
-  checkForUpdate();
-  clearInterval(state.updateTimer); state.updateTimer = setInterval(checkForUpdate, 4000);
-  startApprovalWatch();
+  startPolling();
 }
+
+// Background polling. Everything that ticks on a timer lives here so it can be
+// paused as one unit when the window isn't visible — a desktop "app" window left
+// open in the background was otherwise re-scanning transcripts every 5s (plus
+// approval/update pollers), which on laptops shows up as system-wide slowdown.
+//
+// Cadence is adaptive: tight while sessions are live or an approval can actually
+// arrive, relaxed when everything is idle — an idle dashboard left on screen
+// shouldn't keep re-scanning transcripts several times a second.
+function refreshDelay() {
+  const live = (state.overview && state.overview.totals && state.overview.totals.live) || 0;
+  return live > 0 ? 5000 : 30000;
+}
+function approvalWatchDelay() {
+  const g = state.gatewayLite;
+  // Gateway off, or always-allow-all on → nothing ever goes pending; idle-check
+  // slowly just to notice if that changes.
+  if (!g || !g.enabled || g.autoAll) return 15000;
+  return 2000;
+}
+function startPolling() {
+  if (state.polling) return; // already running — don't stack timers
+  state.polling = true;
+  const loop = (key, fn, delayFn) => {
+    const tick = async () => {
+      if (!state.polling) return;
+      try { await fn(); } catch { /* server blip */ }
+      if (!state.polling) return;
+      state[key] = setTimeout(tick, delayFn());
+    };
+    tick();
+  };
+  loop('refreshTimer', refresh, refreshDelay);
+  loop('updateTimer', checkForUpdate, () => 30000);
+  loop('approvalWatchTimer', pollApprovalPrompts, approvalWatchDelay);
+  if (state.view === 'approvals') { pollPending(); state.approvalsTimer = setInterval(pollPending, 1500); }
+}
+function stopPolling() {
+  state.polling = false;
+  clearTimeout(state.refreshTimer); clearTimeout(state.updateTimer);
+  clearTimeout(state.approvalWatchTimer); clearInterval(state.approvalsTimer);
+  state.refreshTimer = state.updateTimer = state.approvalWatchTimer = state.approvalsTimer = null;
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) stopPolling();
+  else if (!$('#authGate')) startPolling(); // resume (with an immediate refresh), unless locked
+});
 
 document.querySelectorAll('.nav-item').forEach((b) => b.addEventListener('click', () => navView(b.dataset.view)));
 

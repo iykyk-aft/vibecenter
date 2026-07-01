@@ -45,6 +45,13 @@ cat > "$LA/com.vibecenter.agent.plist" <<EOF
   <key>WorkingDirectory</key><string>$ROOT</string>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+  <!-- Low-priority background agent: yield CPU to whatever you're actively using
+       (Nice) and never respawn faster than every 10s if it crashes
+       (ThrottleInterval), so a restart loop can't peg a core. -->
+  <key>ProcessType</key><string>Adaptive</string>
+  <key>Nice</key><integer>10</integer>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>LowPriorityIO</key><true/>
   <key>StandardOutPath</key><string>/tmp/vibecenter-agent.log</string>
   <key>StandardErrorPath</key><string>/tmp/vibecenter-agent.log</string>
 </dict></plist>
@@ -59,6 +66,10 @@ cat > "$LA/com.vibecenter.bridge.plist" <<EOF
   <key>ProgramArguments</key><array><string>/bin/bash</string><string>$RUN</string></array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+  <key>ProcessType</key><string>Background</string>
+  <key>Nice</key><integer>10</integer>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>LowPriorityIO</key><true/>
   <key>StandardOutPath</key><string>/tmp/vibecenter-bridge.log</string>
   <key>StandardErrorPath</key><string>/tmp/vibecenter-bridge.log</string>
 </dict></plist>

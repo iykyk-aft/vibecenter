@@ -25,6 +25,16 @@ function hashPw(password, salt) {
   return crypto.scryptSync(String(password), salt, 64).toString('hex');
 }
 
+// A deterministic per-account key: two computers that sign in with the SAME
+// email + password derive the identical key (unlike the password hash, which is
+// salted per-machine). It lets same-account agents on a LAN prove they're the
+// same account to each other — and never travels the network in the clear (only
+// time-bounded HMACs of it do). Stored locally alongside the password hash.
+function deriveLanKey(email, password) {
+  return crypto.scryptSync(String(password), 'vibecenter-lan-v1:' + email, 32).toString('hex');
+}
+const lanIdOf = (key) => crypto.createHash('sha256').update('id:' + key).digest('hex').slice(0, 24);
+
 export function hasUsers() { return read().users.length > 0; }
 
 export function registerUser(email, password, invite) {
@@ -44,7 +54,8 @@ export function registerUser(email, password, invite) {
   }
 
   const salt = crypto.randomBytes(16).toString('hex');
-  const user = { id: 'u-' + crypto.randomBytes(6).toString('hex'), email, salt, hash: hashPw(password, salt), createdAt: Date.now() };
+  const lanKey = deriveLanKey(email, password);
+  const user = { id: 'u-' + crypto.randomBytes(6).toString('hex'), email, salt, hash: hashPw(password, salt), lanKey, lanId: lanIdOf(lanKey), createdAt: Date.now() };
   d.users.push(user);
   if (inv) { inv.usedBy = user.id; inv.usedAt = Date.now(); }
   write(d);
@@ -74,7 +85,19 @@ export function verifyLogin(email, password) {
   const a = Buffer.from(hashPw(password, u.salt), 'hex');
   const b = Buffer.from(u.hash, 'hex');
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+  // Backfill the LAN key for accounts created before this existed (or after a
+  // password change), so same-account discovery keeps working without a re-register.
+  const lanKey = deriveLanKey(email, password);
+  if (u.lanKey !== lanKey) { u.lanKey = lanKey; u.lanId = lanIdOf(lanKey); const d2 = read(); const t = d2.users.find((x) => x.id === u.id); if (t) { t.lanKey = lanKey; t.lanId = u.lanId; write(d2); } }
   return { id: u.id, email: u.email };
+}
+
+// The local owner's LAN identity (first/owner account). null until someone has
+// signed in at least once on this machine. Used by the discovery service.
+export function ownerLanIdentity() {
+  const u = read().users[0];
+  if (!u || !u.lanKey) return null;
+  return { id: u.lanId, key: u.lanKey, email: u.email };
 }
 
 export function createSession(userId) {
