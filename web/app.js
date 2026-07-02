@@ -1859,6 +1859,22 @@ function linkRow(icon, title, sub, href) {
     el('span', { class: 'bl-arrow' }, '↗'));
 }
 
+function planStalenessNote(plan) {
+  if (!plan || plan.metered || !plan.tokenExpiresAt) return null;
+  const expired = Date.now() > plan.tokenExpiresAt;
+  return el('p', {
+    style: `font-size:12.5px;line-height:1.6;margin:-6px 0 16px;padding:10px 12px;border-radius:8px;
+      background:${expired ? 'rgba(255,194,75,.1)' : 'rgba(255,255,255,.04)'};
+      border:1px solid ${expired ? 'rgba(255,194,75,.35)' : 'var(--glass-brd)'};color:var(--muted)`
+  },
+    el('b', { style: 'color:var(--text)' }, expired ? '⚠ Plan tier may be stale — ' : 'ℹ Plan tier: '),
+    expired
+      ? 'your Claude Code login token has expired. It refreshes automatically the next time you use Claude Code, which also re-syncs your plan tier (e.g. 5×/20×) here. If you just changed plans, run '
+      : `read from your Claude Code login token (valid until ${new Date(plan.tokenExpiresAt).toLocaleString()}). If you changed plans since then, it won’t show up here until the token refreshes — run `,
+    el('code', {}, '/login'),
+    ' in Claude Code to refresh it immediately.');
+}
+
 function billingCard(plan) {
   const metered = !(plan && plan.metered === false);
   return el('div', { class: 'card fade-in', style: 'max-width:640px' },
@@ -1872,6 +1888,7 @@ function billingCard(plan) {
         ? el('span', {}, ' Your ', el('b', { style: 'color:var(--neon2)' }, 'Claude Max'),
             ' plan is a separate flat-fee subscription and doesn\'t draw from API credits.')
         : null),
+    planStalenessNote(plan),
     el('div', { class: 'billing-links' },
       linkRow('💳', 'Add / top-up API credits', 'Buy prepaid credits for the metered API', 'https://console.anthropic.com/settings/billing'),
       linkRow('🔁', 'Auto-reload settings', 'Auto-buy credits when your balance runs low', 'https://console.anthropic.com/settings/billing'),

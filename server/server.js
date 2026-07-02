@@ -204,7 +204,7 @@ function readPlan() {
     const c = JSON.parse(fs.readFileSync(credPath, 'utf8'));
     const o = c.claudeAiOauth || {};
     if (o.subscriptionType) {
-      return { type: o.subscriptionType, tier: o.rateLimitTier || null, metered: false };
+      return { type: o.subscriptionType, tier: o.rateLimitTier || null, metered: false, tokenExpiresAt: o.expiresAt || null };
     }
   } catch { /* no credentials / API-key user */ }
   return { type: 'api', tier: null, metered: true };
