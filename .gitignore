@@ -5,3 +5,6 @@ data/
 *.cc-backup
 *.log
 vibecenter/bridge-run.sh
+
+# per-machine Claude Code settings (absolute paths, permissions) — never sync
+.claude/settings.local.json

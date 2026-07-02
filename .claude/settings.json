@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__claude_ai_Google_Drive__create_file"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/scripts/git-autosync.sh\" pull"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/scripts/git-autosync.sh\" push"
+          }
+        ]
+      }
+    ]
+  }
+}
