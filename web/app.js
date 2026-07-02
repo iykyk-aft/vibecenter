@@ -692,15 +692,16 @@ async function renderAccount() {
         el('div', { class: 'gauge' }, el('span', { class: 'gauge-fill', style: `width:${pct}%` })),
         el('div', { class: 'kpi-sub', style: 'margin-top:7px' }, `${pct}% of your busiest-ever 5h window (${fmtNum(w.peak)} tok)`)))));
 
-  // usage remaining vs budgets
+  // usage remaining vs your own real peak usage (Anthropic publishes no exact
+  // token quota for Max plans, so "remaining" is tracked against your busiest
+  // day/window ever, not a live account balance)
   const b = a.budgets || {};
   v.append(el('div', { class: 'card fade-in' },
-    el('div', { class: 'card-title' }, 'Usage Remaining', el('span', { class: 'muted' }, 'vs your budgets')),
-    gaugeRow('Today', a.ranges.today.tokens, b.day, null),
+    el('div', { class: 'card-title' }, 'Usage Remaining', el('span', { class: 'muted' }, 'vs your busiest ever')),
+    gaugeRow('Today', a.ranges.today.tokens, b.day, a.ranges.today.peak),
     gaugeRow('Rolling 5-hour window', a.window5h.tokens, b.window5h, a.window5h.peak),
     el('div', { class: 'kpi-sub', style: 'margin-top:4px' },
-      b.day ? 'Budgets are your own pacing targets.'
-        : 'Set token budgets in Settings to track remaining — Anthropic doesn\'t publish exact Max limits, so these are your own pacing targets.')));
+      'Anthropic doesn\'t publish exact Max token limits, so this tracks you against your own busiest day/5h window ever — the closest real signal available. Set a manual budget in Settings to pace against a specific number instead.')));
 
   // time ranges
   v.append(el('div', { class: 'row', style: 'grid-template-columns:repeat(3,1fr)' },

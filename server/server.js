@@ -367,6 +367,9 @@ function accountPayload() {
     while (allMsgs[hi].t - allMsgs[lo].t > 5 * HOUR) { run -= allMsgs[lo].tok; lo++; }
     if (run > peak5) peak5 = run;
   }
+  // busiest calendar day ever, for the "Today" gauge fallback (Anthropic publishes
+  // no exact token quota, so this is the closest real reference point we have)
+  const peakDay = Math.max(0, ...Object.values(dailyTok));
 
   // Cache savings: cache reads bill at 0.1x input, so the discount is the gap
   // between charging those tokens as fresh input vs. as cache reads (per model).
@@ -383,7 +386,7 @@ function accountPayload() {
     plan: readPlan(),
     totals: { tokens: allTok, cost: allCost, sessions, tools, activeDays: activeDays.size, firstTs: firstTs === Infinity ? null : firstTs },
     window5h: { tokens: win5Tok, messages: win5Msgs, peak: peak5 },
-    ranges: range,
+    ranges: { ...range, today: { ...range.today, peak: peakDay } },
     budgets: readConfig().budgets || {},
     hourly, dow, heatmap: heat,
     composition: comp,
