@@ -606,10 +606,11 @@ function rangeCard(label, r, metered) {
 function gaugeRow(label, used, budget, fallbackPeak) {
   const cap = budget || fallbackPeak || 1;
   const pct = Math.min(100, Math.round((used / cap) * 100));
+  const over = budget && used > budget;
   const right = budget
-    ? `${fmtNum(Math.max(0, budget - used))} left of ${fmtNum(budget)}`
+    ? (over ? `${fmtNum(used - budget)} over ${fmtNum(budget)} budget` : `${fmtNum(budget - used)} left of ${fmtNum(budget)}`)
     : `${fmtNum(used)}${fallbackPeak ? ` / peak ${fmtNum(fallbackPeak)}` : ''}`;
-  const danger = budget && used >= budget;
+  const danger = over;
   return el('div', { style: 'margin-bottom:15px' },
     el('div', { style: 'display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:6px' },
       el('span', {}, label), el('span', { class: 'muted', style: danger ? 'color:var(--bad)' : '' }, right)),

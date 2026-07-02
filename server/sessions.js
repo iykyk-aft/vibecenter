@@ -110,7 +110,11 @@ function parseSession(file) {
       input: u.input_tokens || 0, output: u.output_tokens || 0,
       cacheCreation: u.cache_creation_input_tokens || 0, cacheRead: u.cache_read_input_tokens || 0,
     });
-    msgTimes.push({ t: ts ? Date.parse(ts) : 0, tok, cost: mcost });
+    msgTimes.push({
+      t: ts ? Date.parse(ts) : 0, tok, cost: mcost, model,
+      cacheCreation: u.cache_creation_input_tokens || 0,
+      cacheRead: u.cache_read_input_tokens || 0,
+    });
     if (Array.isArray(msg.content)) {
       for (const b of msg.content) if (b.type === 'tool_use') {
         toolCalls++;
