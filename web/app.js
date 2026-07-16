@@ -707,7 +707,7 @@ function fableUsageCard(overviewModels, admin) {
 }
 
 function verifiedBillingCard(admin) {
-  if (!admin || admin.ok === false) {
+  if (!admin || !admin.ok) {
     const msg = !admin || admin.reason === 'no-key'
       ? 'Add an Anthropic Admin API key in Settings to see real billed cost here — ground truth from Anthropic, not a local estimate.'
       : admin.reason === 'invalid-key' ? 'The saved Admin API key was rejected (401 Unauthorized) — check it in Settings.'
@@ -838,7 +838,15 @@ async function renderAccount() {
   v.append(fableUsageCard((state.overview && state.overview.models) || [], admin));
   {
     const spentIsReal = !!(admin && admin.ok);
-    const spentUSD = spentIsReal ? admin.totalCostUSD : (a.totals.cost || 0);
+    // Fall back to the local estimate, but only summed over the same window as
+    // the ledger (since the earliest logged purchase) — not the lifetime total,
+    // which would make "remaining" go deeply negative the moment someone logs
+    // their first purchase after already having unrelated historical usage.
+    const windowSince = earliestPurchase || (admin && admin.since ? admin.since.slice(0, 10) : null);
+    const localSpentInWindow = windowSince
+      ? Object.entries(a.dailyCost || {}).filter(([d]) => d >= windowSince).reduce((s, [, v]) => s + v, 0)
+      : (a.totals.cost || 0);
+    const spentUSD = spentIsReal ? admin.totalCostUSD : localSpentInWindow;
     v.append(ledgerCard(ledger, ledgerData.lowBalanceUSD, spentUSD, spentIsReal, admin));
   }
 

@@ -625,7 +625,11 @@ async function handleApi(req, res, pathname) {
     const key = adminKeyValue();
     if (!key) return sendJson(res, 200, { ok: false, reason: 'no-key' });
     const q = new URL(req.url, 'http://localhost').searchParams;
-    const until = new Date();
+    // Round "now" down to a 2-minute bucket (matches adminUsageSummary's TTL)
+    // so repeated calls in that window share a cache key instead of missing
+    // on every request over a millisecond-precision timestamp.
+    const BUCKET_MS = 2 * 60 * 1000;
+    const until = new Date(Math.floor(Date.now() / BUCKET_MS) * BUCKET_MS);
     let since;
     if (q.get('since')) {
       since = new Date(q.get('since'));
