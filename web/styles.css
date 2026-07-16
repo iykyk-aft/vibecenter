@@ -244,7 +244,7 @@ input[type=text], input[type=password] {
   padding: 12px 14px; color: var(--text); font-size: 13px; font-family: inherit; outline: none;
   transition: border .15s, box-shadow .15s;
 }
-input[type=email], input[type=number], input:not([type]) {
+input[type=email], input[type=number], input[type=date], input:not([type]) {
   background: rgba(0,0,0,0.3); border: 1px solid var(--glass-brd); border-radius: 11px;
   padding: 12px 14px; color: var(--text); font-size: 13px; font-family: inherit; outline: none;
 }

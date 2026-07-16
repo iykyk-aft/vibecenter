@@ -662,11 +662,134 @@ function cumulative(map) {
   return out;
 }
 
+// ---- Fable/Mythos usage + prepaid credit ledger ----------------------------
+function prettyModelLabel(id) {
+  if (!id) return 'Unknown';
+  return id.replace('claude-', '').replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+function hbarsCost(items) {
+  const max = Math.max(...items.map((i) => i.value), 0.01);
+  const wrap = el('div', { class: 'hbars' });
+  items.forEach((it) => wrap.append(el('div', { class: 'hbar-row' },
+    el('div', { class: 'hbar-name' }, it.label),
+    el('div', { class: 'hbar-track' }, el('span', { class: 'hbar-fill', style: `width:${Math.max(3, (it.value / max) * 100)}%` })),
+    el('div', { class: 'hbar-val' }, fmtCost(it.value)))));
+  return wrap;
+}
+function fmtWindowLabel(admin) {
+  if (!admin || !admin.since || !admin.until) return 'recent';
+  const days = Math.max(1, Math.round((new Date(admin.until) - new Date(admin.since)) / 86400000));
+  return days <= 31 ? `last ${days}d` : `since ${new Date(admin.since).toLocaleDateString()}`;
+}
+const isFableFamily = (m) => /fable|mythos/i.test(m || '');
+
+function fableUsageCard(overviewModels, admin) {
+  const localRows = (overviewModels || []).filter((m) => isFableFamily(m.model));
+  const adminRows = admin && admin.ok ? admin.byModel.filter((m) => isFableFamily(m.model)) : null;
+  const totalLocalTok = localRows.reduce((s, m) => s + m.tokens, 0);
+  const totalAdminCost = adminRows ? adminRows.reduce((s, m) => s + m.costUSD, 0) : null;
+  if (!localRows.length && !(adminRows && adminRows.length)) {
+    return el('div', { class: 'card fade-in' },
+      el('div', { class: 'card-title' }, '📖 Fable / Mythos Usage'),
+      el('div', { class: 'empty' }, 'No Fable or Mythos usage recorded yet.'));
+  }
+  return el('div', { class: 'card fade-in' },
+    el('div', { class: 'card-title' }, '📖 Fable / Mythos Usage',
+      el('span', { class: 'muted' }, adminRows && adminRows.length ? `verified · Anthropic Admin API · ${fmtWindowLabel(admin)}` : 'local estimate')),
+    el('div', { style: 'display:flex;gap:28px;align-items:center;flex-wrap:wrap;margin-bottom:14px' },
+      el('div', {},
+        el('div', { class: 'kpi-value neon', style: 'font-size:34px' }, fmtNum(totalLocalTok)),
+        el('div', { class: 'kpi-sub' }, 'lifetime tokens (local)')),
+      totalAdminCost != null ? el('div', {},
+        el('div', { class: 'kpi-value', style: 'font-size:34px;color:var(--neon2)' }, fmtCost(totalAdminCost)),
+        el('div', { class: 'kpi-sub' }, `real billed cost, ${fmtWindowLabel(admin)}`)) : null),
+    localRows.length ? hbars(localRows.map((m) => ({ label: m.label, value: m.tokens }))) : null);
+}
+
+function verifiedBillingCard(admin) {
+  if (!admin || admin.ok === false) {
+    const msg = !admin || admin.reason === 'no-key'
+      ? 'Add an Anthropic Admin API key in Settings to see real billed cost here — ground truth from Anthropic, not a local estimate.'
+      : admin.reason === 'invalid-key' ? 'The saved Admin API key was rejected (401 Unauthorized) — check it in Settings.'
+        : admin.reason === 'forbidden' ? 'That key doesn\'t have Admin API access (403 Forbidden) — Admin keys need an admin role in a Claude Console organization; individual claude.ai plans can\'t create one.'
+          : `Couldn't reach the Anthropic Admin API${admin && admin.error ? ': ' + admin.error : ''}.`;
+    return el('div', { class: 'card fade-in' },
+      el('div', { class: 'card-title' }, '✅ Verified API Billing', el('span', { class: 'muted' }, 'ground truth from Anthropic')),
+      el('div', { class: 'empty', style: 'padding:20px 0' }, msg));
+  }
+  const rows = admin.byModel.slice(0, 8).map((m) => ({ label: prettyModelLabel(m.model), value: m.costUSD }));
+  return el('div', { class: 'card fade-in' },
+    el('div', { class: 'card-title' }, '✅ Verified API Billing',
+      el('span', { class: 'muted' }, `${fmtWindowLabel(admin)} · Anthropic Admin API${admin.stale ? ' · stale, retrying' : ''}`)),
+    el('div', { style: 'display:flex;gap:28px;align-items:center;flex-wrap:wrap;margin-bottom:18px' },
+      el('div', {},
+        el('div', { class: 'kpi-value neon', style: 'font-size:38px' }, fmtCost(admin.totalCostUSD)),
+        el('div', { class: 'kpi-sub' }, `real billed cost, ${fmtWindowLabel(admin)}`))),
+    rows.length ? hbarsCost(rows) : el('div', { class: 'empty' }, 'No billed usage in this window'));
+}
+
+function ledgerCard(ledger, lowBalanceUSD, spentUSD, spentIsReal, admin) {
+  const purchased = ledger.reduce((s, e) => s + e.amountUSD, 0);
+  const remaining = purchased - spentUSD;
+  const threshold = lowBalanceUSD != null ? lowBalanceUSD : purchased * 0.15;
+  const low = purchased > 0 && remaining <= threshold;
+  const pct = purchased > 0 ? Math.max(0, Math.min(100, (remaining / purchased) * 100)) : 0;
+
+  const list = el('div', { style: 'margin-top:14px;display:flex;flex-direction:column;gap:8px;max-height:220px;overflow:auto' });
+  if (!ledger.length) list.append(el('div', { class: 'q-hint' }, 'No purchases logged yet.'));
+  for (const entry of [...ledger].sort((a, b) => (b.date || '').localeCompare(a.date || ''))) {
+    list.append(el('div', { class: 'rule' },
+      el('code', {}, `${entry.date} · ${fmtCost(entry.amountUSD)}${entry.note ? ' · ' + entry.note : ''}`),
+      el('button', { class: 'rm', title: 'remove', onclick: () => removeLedgerEntry(entry.id) }, '✕')));
+  }
+
+  return el('div', { class: 'card fade-in' },
+    el('div', { class: 'card-title' }, '🏦 Prepaid Credit Ledger',
+      el('span', { class: 'muted' }, spentIsReal ? `spend from Anthropic Admin API · ${fmtWindowLabel(admin)}` : 'spend estimated locally')),
+    low ? el('div', {
+      style: 'margin-bottom:14px;padding:10px 12px;border-radius:8px;background:rgba(255,92,92,.1);border:1px solid rgba(255,92,92,.35);color:var(--bad);font-size:12.5px',
+    },
+      `⚠ Low balance — ${fmtCost(Math.max(0, remaining))} left. Buy more at `,
+      el('a', { href: 'https://console.anthropic.com/settings/billing', target: '_blank', rel: 'noopener noreferrer', style: 'color:var(--bad);text-decoration:underline' }, 'console.anthropic.com'),
+      ', then log it below.') : null,
+    el('div', { style: 'display:flex;gap:28px;align-items:center;flex-wrap:wrap' },
+      el('div', {},
+        el('div', { class: 'kpi-value', style: `font-size:34px;color:${low ? 'var(--bad)' : 'var(--good)'}` }, fmtCost(Math.max(0, remaining))),
+        el('div', { class: 'kpi-sub' }, `of ${fmtCost(purchased)} purchased`)),
+      el('div', { style: 'flex:1;min-width:220px' },
+        el('div', { class: 'gauge' }, el('span', { class: 'gauge-fill', style: `width:${pct}%;background:${low ? 'var(--bad)' : ''}` })),
+        el('div', { class: 'kpi-sub', style: 'margin-top:7px' }, `${fmtCost(spentUSD)} spent${spentIsReal ? '' : ' (estimate — assumes purchases cover all local usage)'}`))),
+    el('div', { class: 'field', style: 'margin-top:16px' },
+      el('label', {}, 'Log a purchase'),
+      el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin-top:4px' },
+        el('input', { type: 'number', id: 'ledgerAmt', placeholder: 'Amount USD', step: '0.01', min: '0', style: 'max-width:140px' }),
+        el('input', { type: 'date', id: 'ledgerDate', value: new Date().toISOString().slice(0, 10), style: 'max-width:160px' }),
+        el('input', { type: 'text', id: 'ledgerNote', placeholder: 'Note (optional)', style: 'flex:1;min-width:140px' }),
+        el('button', { class: 'btn', onclick: addLedgerEntry }, '+ Log purchase'))),
+    list);
+}
+async function addLedgerEntry() {
+  const amountUSD = Number($('#ledgerAmt').value);
+  if (!Number.isFinite(amountUSD) || amountUSD <= 0) return;
+  const date = $('#ledgerDate').value || new Date().toISOString().slice(0, 10);
+  const note = $('#ledgerNote').value.trim();
+  await api('/api/ledger', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'add', amountUSD, date, note }) });
+  renderAccount();
+}
+async function removeLedgerEntry(id) {
+  if (!confirm('Remove this purchase from the ledger?')) return;
+  await api('/api/ledger', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'remove', id }) });
+  renderAccount();
+}
+
 async function renderAccount() {
   $('#crumb').textContent = 'Account';
   const v = $('#view');
   v.innerHTML = '<div class="empty"><div class="big">⏳</div>Loading…</div>';
-  const a = await api('/api/account');
+  const [a, ledgerData] = await Promise.all([api('/api/account'), api('/api/ledger')]);
+  const ledger = ledgerData.ledger || [];
+  const earliestPurchase = ledger.length ? [...ledger].sort((x, y) => (x.date || '').localeCompare(y.date || ''))[0].date : null;
+  const admin = await api('/api/admin-usage' + (earliestPurchase ? `?since=${encodeURIComponent(earliestPurchase)}` : '?days=30'));
   v.innerHTML = '';
   const plan = a.plan || { metered: true };
   const metered = plan.metered;
@@ -708,6 +831,16 @@ async function renderAccount() {
     rangeCard('Last 24 hours', a.ranges.today, metered),
     rangeCard('Last 7 days', a.ranges.week, metered),
     rangeCard('Last 30 days', a.ranges.month, metered)));
+
+  // real billed cost from the Anthropic Admin API (if configured), Fable/Mythos
+  // usage, and the prepaid credit ledger
+  v.append(verifiedBillingCard(admin));
+  v.append(fableUsageCard((state.overview && state.overview.models) || [], admin));
+  {
+    const spentIsReal = !!(admin && admin.ok);
+    const spentUSD = spentIsReal ? admin.totalCostUSD : (a.totals.cost || 0);
+    v.append(ledgerCard(ledger, ledgerData.lowBalanceUSD, spentUSD, spentIsReal, admin));
+  }
 
   // month-to-date spend pace + end-of-month projection
   v.append(el('div', { class: 'card fade-in' },
@@ -2141,6 +2274,20 @@ async function renderSettings() {
       el('button', { class: 'btn', style: 'margin-top:12px', onclick: saveToken }, 'Save token'))));
 
   v.append(el('div', { class: 'card fade-in', style: 'max-width:640px;margin-top:18px' },
+    el('div', { class: 'card-title' }, 'Anthropic Admin API'),
+    el('p', { style: 'color:var(--muted);font-size:13px;margin-bottom:16px;line-height:1.6' },
+      'Paste an Admin API key (', el('code', {}, 'sk-ant-admin01-…'),
+      ') to pull real billed cost & token counts straight from Anthropic — including exact Fable/Mythos spend — instead of a local estimate. Create one at ',
+      el('a', { href: 'https://platform.claude.com/settings/admin-keys', target: '_blank', rel: 'noopener noreferrer' }, 'Console → Settings → Admin keys'),
+      '. Requires an admin role in a Claude Console (API) organization — individual claude.ai plans can\'t create one. Stored locally in ',
+      el('code', {}, 'data/config.json'), ' and never leaves your machine. ',
+      cfg.hasAdminKey ? el('span', { style: 'color:var(--good)' }, '● Key configured') : el('span', { style: 'color:var(--warn)' }, '○ Not set')),
+    el('div', { class: 'field' },
+      el('label', {}, 'Admin API key'),
+      el('input', { type: 'password', id: 'adminKey', placeholder: cfg.hasAdminKey ? '•••••••••• (saved)' : 'sk-ant-admin01-…' }),
+      el('button', { class: 'btn', style: 'margin-top:12px', onclick: saveAdminKey }, 'Save key'))));
+
+  v.append(el('div', { class: 'card fade-in', style: 'max-width:640px;margin-top:18px' },
     el('div', { class: 'card-title' }, 'Live Approvals Hook'),
     el('p', { style: 'color:var(--muted);font-size:13px;line-height:1.7' },
       'To populate the live activity & approvals feed, install the Claude Code hook once:',
@@ -2317,6 +2464,13 @@ async function saveToken() {
   const val = $('#ghToken').value.trim();
   if (!val) return;
   await api('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ githubToken: val }) });
+  renderSettings();
+}
+
+async function saveAdminKey() {
+  const val = $('#adminKey').value.trim();
+  if (!val) return;
+  await api('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ anthropicAdminKey: val }) });
   renderSettings();
 }
 

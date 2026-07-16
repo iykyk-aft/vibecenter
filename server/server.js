@@ -15,6 +15,7 @@ import { startDiscovery, lanPeers, findPeer, selfMid, accountAuthHeader, verifyA
 import { runQuery } from './claude.js';
 import { prettyModel, costFor } from './pricing.js';
 import { buildRecommendations, setDefaultModel } from './optimize.js';
+import { adminUsageSummary } from './anthropic-usage.js';
 
 const ROOT = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '..');
 const WEB_DIR = path.join(ROOT, 'web');
@@ -37,6 +38,11 @@ function writeConfig(cfg) {
 }
 function githubToken() {
   return process.env.GITHUB_TOKEN || readConfig().githubToken || null;
+}
+// Admin API key for real billed cost/usage (Console org admins only — see
+// server/anthropic-usage.js). Separate from the OAuth login read by readPlan().
+function adminKeyValue() {
+  return process.env.ANTHROPIC_ADMIN_KEY || readConfig().anthropicAdminKey || null;
 }
 
 // ---- same-network (LAN) access ---------------------------------------------
@@ -578,6 +584,11 @@ async function handleApi(req, res, pathname) {
       const body = await readBody(req);
       const cfg = readConfig();
       if (typeof body.githubToken === 'string') cfg.githubToken = body.githubToken.trim();
+      if (typeof body.anthropicAdminKey === 'string') cfg.anthropicAdminKey = body.anthropicAdminKey.trim();
+      if ('ledgerLowBalanceUSD' in body) {
+        const n = Number(body.ledgerLowBalanceUSD);
+        cfg.ledgerLowBalanceUSD = Number.isFinite(n) && n > 0 ? n : null;
+      }
       if (body.budgets && typeof body.budgets === 'object') {
         cfg.budgets = cfg.budgets || {};
         for (const k of ['day', 'window5h']) {
@@ -593,13 +604,65 @@ async function handleApi(req, res, pathname) {
         if (u) cfg.publicUrl = u; else delete cfg.publicUrl;
       }
       writeConfig(cfg);
-      return sendJson(res, 200, { ok: true, hasToken: !!githubToken(), budgets: cfg.budgets || {}, lanAccess: cfg.lanAccess === true, publicUrl: cfg.publicUrl || null });
+      return sendJson(res, 200, {
+        ok: true, hasToken: !!githubToken(), hasAdminKey: !!cfg.anthropicAdminKey,
+        ledgerLowBalanceUSD: cfg.ledgerLowBalanceUSD ?? null,
+        budgets: cfg.budgets || {}, lanAccess: cfg.lanAccess === true, publicUrl: cfg.publicUrl || null,
+      });
     }
     return sendJson(res, 200, {
-      hasToken: !!githubToken(), plan: readPlan(), budgets: readConfig().budgets || {},
+      hasToken: !!githubToken(), hasAdminKey: !!adminKeyValue(), plan: readPlan(), budgets: readConfig().budgets || {},
+      ledgerLowBalanceUSD: readConfig().ledgerLowBalanceUSD ?? null,
       lanAccess: readConfig().lanAccess === true, lanActive: LAN_ACCESS,
       lanIp: primaryLanIP(), port: PORT, publicUrl: readConfig().publicUrl || null,
     });
+  }
+
+  // Real billed cost/tokens from Anthropic's Admin Usage & Cost API (ground
+  // truth, vs. the local transcript-based estimate used everywhere else).
+  // ?since=YYYY-MM-DD for a specific start date, else ?days=N (default 30).
+  if (pathname === '/api/admin-usage') {
+    const key = adminKeyValue();
+    if (!key) return sendJson(res, 200, { ok: false, reason: 'no-key' });
+    const q = new URL(req.url, 'http://localhost').searchParams;
+    const until = new Date();
+    let since;
+    if (q.get('since')) {
+      since = new Date(q.get('since'));
+      if (isNaN(since.getTime())) since = new Date(until.getTime() - 30 * 24 * 3600 * 1000);
+    } else {
+      const days = Math.min(366, Math.max(1, Number(q.get('days')) || 30));
+      since = new Date(until.getTime() - days * 24 * 3600 * 1000);
+    }
+    const data = await adminUsageSummary(key, { since, until });
+    return sendJson(res, 200, data);
+  }
+
+  // Manual prepaid-credit ledger — Anthropic has no purchase API, so the user
+  // logs each top-up here; the dashboard nets it against real (or estimated)
+  // spend to show a remaining balance.
+  if (pathname === '/api/ledger') {
+    if (req.method === 'POST') {
+      const body = await readBody(req);
+      const cfg = readConfig();
+      cfg.ledger = Array.isArray(cfg.ledger) ? cfg.ledger : [];
+      if (body.action === 'add') {
+        const amountUSD = Number(body.amountUSD);
+        if (!Number.isFinite(amountUSD) || amountUSD <= 0) return sendJson(res, 400, { error: 'amountUSD must be a positive number' });
+        const date = typeof body.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.date) ? body.date : new Date().toISOString().slice(0, 10);
+        const note = typeof body.note === 'string' ? body.note.slice(0, 200) : '';
+        cfg.ledger.push({ id: crypto.randomUUID(), amountUSD, date, note, createdAt: Date.now() });
+        writeConfig(cfg);
+        return sendJson(res, 200, { ok: true, ledger: cfg.ledger });
+      }
+      if (body.action === 'remove' && body.id) {
+        cfg.ledger = cfg.ledger.filter((e) => e.id !== body.id);
+        writeConfig(cfg);
+        return sendJson(res, 200, { ok: true, ledger: cfg.ledger });
+      }
+      return sendJson(res, 400, { error: 'bad request' });
+    }
+    return sendJson(res, 200, { ledger: readConfig().ledger || [], lowBalanceUSD: readConfig().ledgerLowBalanceUSD ?? null });
   }
 
   if (pathname === '/api/apps') {
