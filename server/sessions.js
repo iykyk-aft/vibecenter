@@ -203,11 +203,27 @@ function projectsSignature() {
   return parts.join('|');
 }
 
-export function listProjects() {
-  if (!fs.existsSync(PROJECTS_DIR)) return [];
-  const sig = projectsSignature();
-  if (projectsMemo.sig === sig) return projectsMemo.data;
+// "Live" is a function of wall-clock time (now - mtime), not of file contents —
+// so it must never be trapped behind the disk-signature memo above. A session
+// that goes quiet stops changing its file, which freezes `sig` forever; if
+// liveCount were computed only inside the memoized block, a session would
+// read as "live" indefinitely after it actually ended (until *some* session,
+// anywhere, next touches its transcript and busts the signature). Recomputing
+// this pass is cheap — pure arithmetic over already-parsed data, no disk I/O —
+// so it runs on every call regardless of memo hit.
+function refreshLiveness(projects) {
+  const now = Date.now();
+  for (const p of projects) {
+    let liveCount = 0;
+    for (const s of p.sessions) {
+      s.active = (now - s.mtime) < ACTIVE_WINDOW_MS;
+      if (s.active) liveCount++;
+    }
+    p.liveCount = liveCount;
+  }
+}
 
+function computeProjects() {
   const dirs = fs.readdirSync(PROJECTS_DIR, { withFileTypes: true })
     .filter((d) => d.isDirectory());
 
@@ -235,7 +251,6 @@ export function listProjects() {
     const daily = {};
     const dailyModel = {};
     let lastActivity = 0;
-    let liveCount = 0;
     for (const s of sessions) {
       totals.input += s.tokens.input;
       totals.output += s.tokens.output;
@@ -245,7 +260,6 @@ export function listProjects() {
       toolCalls += s.toolCalls;
       billableTokens += s.billableTokens;
       if (s.mtime > lastActivity) lastActivity = s.mtime;
-      if (s.active) liveCount++;
       for (const [m, info] of Object.entries(s.models)) {
         modelTokens[m] = (modelTokens[m] || 0) + info.tokens;
       }
@@ -263,7 +277,7 @@ export function listProjects() {
       name: path.basename(cwd.replace(/[\\/]+$/, '')) || d.name,
       cwd,
       sessionCount: sessions.length,
-      liveCount,
+      liveCount: 0, // filled in by refreshLiveness() below on every call
       lastActivity,
       cost,
       billableTokens,
@@ -276,8 +290,15 @@ export function listProjects() {
     });
   }
   projects.sort((a, b) => b.lastActivity - a.lastActivity);
-  projectsMemo = { sig, data: projects };
   return projects;
+}
+
+export function listProjects() {
+  if (!fs.existsSync(PROJECTS_DIR)) return [];
+  const sig = projectsSignature();
+  if (projectsMemo.sig !== sig) projectsMemo = { sig, data: computeProjects() };
+  refreshLiveness(projectsMemo.data);
+  return projectsMemo.data;
 }
 
 export function getProject(id) {

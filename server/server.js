@@ -318,7 +318,7 @@ function accountPayload() {
   const projects = listProjects();
   const now = Date.now();
   const HOUR = 3600e3, DAY = 86400e3;
-  let allTok = 0, allCost = 0, sessions = 0, tools = 0;
+  let allTok = 0, allCost = 0, sessions = 0, tools = 0, live = 0;
   const toolAgg = {};
   const hourly = new Array(24).fill(0);
   const dow = new Array(7).fill(0);
@@ -335,6 +335,7 @@ function accountPayload() {
   for (const p of projects) {
     sessions += p.sessionCount;
     tools += p.toolCalls;
+    live += p.liveCount;
     comp.input += p.tokens.input; comp.output += p.tokens.output;
     comp.cacheCreation += p.tokens.cacheCreation; comp.cacheRead += p.tokens.cacheRead;
     for (const s of p.sessions) {
@@ -390,7 +391,7 @@ function accountPayload() {
   return {
     generatedAt: now,
     plan: readPlan(),
-    totals: { tokens: allTok, cost: allCost, sessions, tools, activeDays: activeDays.size, firstTs: firstTs === Infinity ? null : firstTs },
+    totals: { tokens: allTok, cost: allCost, sessions, tools, live, activeDays: activeDays.size, firstTs: firstTs === Infinity ? null : firstTs },
     window5h: { tokens: win5Tok, messages: win5Msgs, peak: peak5 },
     ranges: { ...range, today: { ...range.today, peak: peakDay } },
     budgets: readConfig().budgets || {},
