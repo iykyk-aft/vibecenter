@@ -799,6 +799,7 @@ async function renderAccount() {
     kpi(metered ? 'Total Spend' : 'API-Equiv. Value', '💸', fmtCost(a.totals.cost), metered ? null : 'not metered', 'pink'),
     kpi('Sessions', '🗂️', String(a.totals.sessions), a.totals.firstTs ? 'since ' + new Date(a.totals.firstTs).toLocaleDateString() : null),
     kpi('Live Now', '🟢', String(a.totals.live), a.totals.live ? 'sessions active' : 'all idle'),
+    kpi('Live Subagents', '🤖', String(a.totals.liveSubagents), a.totals.liveSubagents ? 'agents running' : 'none running'),
     kpi('Active Days', '📅', String(a.totals.activeDays), a.streak ? `${a.streak}-day streak 🔥` : null),
     kpi('Tool Calls', '🛠️', fmtNum(a.totals.tools), null)));
 

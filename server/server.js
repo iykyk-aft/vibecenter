@@ -248,7 +248,7 @@ function readBody(req) {
 
 function overviewPayload(projects) {
   const totals = { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 };
-  let cost = 0, billableTokens = 0, sessions = 0, live = 0, toolCalls = 0;
+  let cost = 0, billableTokens = 0, sessions = 0, live = 0, liveSubagents = 0, toolCalls = 0;
   const modelTokens = {};
   const daily = {};
   const modelDaily = {}; // 'YYYY-MM-DD' -> { model: tokens }
@@ -261,6 +261,7 @@ function overviewPayload(projects) {
     billableTokens += p.billableTokens;
     sessions += p.sessionCount;
     live += p.liveCount;
+    liveSubagents += p.liveSubagents || 0;
     toolCalls += p.toolCalls;
     for (const [m, t] of Object.entries(p.modelTokens)) modelTokens[m] = (modelTokens[m] || 0) + t;
     for (const [d, t] of Object.entries(p.daily)) daily[d] = (daily[d] || 0) + t;
@@ -272,7 +273,7 @@ function overviewPayload(projects) {
   return {
     generatedAt: Date.now(),
     plan: readPlan(),
-    totals: { cost, billableTokens, sessions, live, toolCalls, tokens: totals },
+    totals: { cost, billableTokens, sessions, live, liveSubagents, toolCalls, tokens: totals },
     models: Object.entries(modelTokens)
       .filter(([, tokens]) => tokens > 0)
       .map(([model, tokens]) => ({ model, label: prettyModel(model), tokens }))
@@ -287,6 +288,7 @@ function overviewPayload(projects) {
       billableTokens: p.billableTokens,
       sessionCount: p.sessionCount,
       liveCount: p.liveCount,
+      liveSubagents: p.liveSubagents,
       toolCalls: p.toolCalls,
       lastActivity: p.lastActivity,
       modelTokens: p.modelTokens,
@@ -318,7 +320,7 @@ function accountPayload() {
   const projects = listProjects();
   const now = Date.now();
   const HOUR = 3600e3, DAY = 86400e3;
-  let allTok = 0, allCost = 0, sessions = 0, tools = 0, live = 0;
+  let allTok = 0, allCost = 0, sessions = 0, tools = 0, live = 0, liveSubagents = 0;
   const toolAgg = {};
   const hourly = new Array(24).fill(0);
   const dow = new Array(7).fill(0);
@@ -336,6 +338,7 @@ function accountPayload() {
     sessions += p.sessionCount;
     tools += p.toolCalls;
     live += p.liveCount;
+    liveSubagents += p.liveSubagents || 0;
     comp.input += p.tokens.input; comp.output += p.tokens.output;
     comp.cacheCreation += p.tokens.cacheCreation; comp.cacheRead += p.tokens.cacheRead;
     for (const s of p.sessions) {
@@ -391,7 +394,7 @@ function accountPayload() {
   return {
     generatedAt: now,
     plan: readPlan(),
-    totals: { tokens: allTok, cost: allCost, sessions, tools, live, activeDays: activeDays.size, firstTs: firstTs === Infinity ? null : firstTs },
+    totals: { tokens: allTok, cost: allCost, sessions, tools, live, liveSubagents, activeDays: activeDays.size, firstTs: firstTs === Infinity ? null : firstTs },
     window5h: { tokens: win5Tok, messages: win5Msgs, peak: peak5 },
     ranges: { ...range, today: { ...range.today, peak: peakDay } },
     budgets: readConfig().budgets || {},
@@ -540,7 +543,7 @@ async function handleApi(req, res, pathname) {
       ...p,
       github: gh,
       sessions: p.sessions.map((s) => ({
-        id: s.id, title: s.title, active: s.active,
+        id: s.id, title: s.title, active: s.active, liveSubagents: s.liveSubagents,
         startTime: s.startTime, endTime: s.endTime, mtime: s.mtime,
         userMessages: s.userMessages, assistantMessages: s.assistantMessages,
         toolCalls: s.toolCalls, cost: s.cost, billableTokens: s.billableTokens,

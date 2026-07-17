@@ -5,6 +5,13 @@ import { costFor } from './pricing.js';
 
 const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
 const ACTIVE_WINDOW_MS = 10 * 60 * 1000; // file touched in last 10 min = "live"
+// A running Task/Agent-tool subagent writes its own transcript at
+// <projectDir>/<sessionId>/subagents/**/agent-*.jsonl (nested one level deeper
+// under subagents/workflows/<id>/ for Workflow-tool runs), separate from the
+// parent session's own .jsonl. Only worth stat-walking those subdirectories for
+// sessions touched recently — a subagent can't still be running under a parent
+// that's been dormant for days.
+const SUBAGENT_SCAN_WINDOW_MS = 3 * 60 * 60 * 1000;
 
 // Parse cache: avoid re-reading a transcript whose mtime+size are unchanged.
 const cache = new Map(); // file -> { sig, data }
@@ -203,6 +210,30 @@ function projectsSignature() {
   return parts.join('|');
 }
 
+// Recursively count subagent transcripts under a session's subagents/ dir and
+// how many are "live" (written within the active window) — a stat-walk, not a
+// content parse, so it's cheap enough to run on every liveness refresh for the
+// small set of recently-touched sessions that pass the time gate above.
+function scanSubagents(dir, now, counts) {
+  let entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
+  catch { return; }
+  for (const e of entries) {
+    const full = path.join(dir, e.name);
+    if (e.isDirectory()) { scanSubagents(full, now, counts); continue; }
+    if (!e.name.endsWith('.jsonl') || e.name === 'journal.jsonl') continue;
+    let st;
+    try { st = fs.statSync(full); } catch { continue; }
+    counts.total++;
+    if ((now - st.mtimeMs) < ACTIVE_WINDOW_MS) counts.live++;
+  }
+}
+function countLiveSubagents(projectDirName, sessionId, now) {
+  const counts = { live: 0, total: 0 };
+  scanSubagents(path.join(PROJECTS_DIR, projectDirName, sessionId, 'subagents'), now, counts);
+  return counts;
+}
+
 // "Live" is a function of wall-clock time (now - mtime), not of file contents —
 // so it must never be trapped behind the disk-signature memo above. A session
 // that goes quiet stops changing its file, which freezes `sig` forever; if
@@ -215,11 +246,21 @@ function refreshLiveness(projects) {
   const now = Date.now();
   for (const p of projects) {
     let liveCount = 0;
+    let liveSubagents = 0;
     for (const s of p.sessions) {
       s.active = (now - s.mtime) < ACTIVE_WINDOW_MS;
+      // A subagent can still be mid-run while the parent's own transcript sits
+      // quiet (it's waiting on the Task tool call to return) — check subagents
+      // for any recently-touched session, not just ones already flagged active.
+      s.liveSubagents = (now - s.mtime) < SUBAGENT_SCAN_WINDOW_MS
+        ? countLiveSubagents(p.id, s.id, now).live
+        : 0;
+      if (s.liveSubagents > 0) s.active = true;
       if (s.active) liveCount++;
+      liveSubagents += s.liveSubagents;
     }
     p.liveCount = liveCount;
+    p.liveSubagents = liveSubagents;
   }
 }
 
@@ -278,6 +319,7 @@ function computeProjects() {
       cwd,
       sessionCount: sessions.length,
       liveCount: 0, // filled in by refreshLiveness() below on every call
+      liveSubagents: 0, // filled in by refreshLiveness() below on every call
       lastActivity,
       cost,
       billableTokens,
