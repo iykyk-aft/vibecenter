@@ -95,7 +95,7 @@ export async function adminUsageSummary(adminKey, { since, until } = {}) {
         const usd = Number(r.amount || 0) / 100; // amount is in cents
         totalCostUSD += usd;
         daily[day] = (daily[day] || 0) + usd;
-        touch(r.model || 'other').costUSD += usd;
+        touch(r.description || r.model || 'other').costUSD += usd;
       }
     }
     for (const bucket of usageBuckets) {

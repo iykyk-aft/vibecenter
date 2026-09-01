@@ -13,7 +13,7 @@ import { ghStatus, projectsRoot, scaffoldProject } from './scaffold.js';
 import { hasUsers, registerUser, verifyLogin, createSession, destroySession, userForToken, createInvite, listInvites, ownerLanIdentity } from './auth.js';
 import { startDiscovery, lanPeers, findPeer, selfMid, accountAuthHeader, verifyAccountHeader } from './lan.js';
 import { runQuery } from './claude.js';
-import { prettyModel, costFor } from './pricing.js';
+import { prettyModel, costFor, priceMeta } from './pricing.js';
 import { buildRecommendations, setDefaultModel } from './optimize.js';
 import { adminUsageSummary } from './anthropic-usage.js';
 
@@ -58,7 +58,11 @@ function lanIPv4s() {
 function primaryLanIP() { return lanIPv4s()[0] || null; }
 const isPrivateIPv4 = (ip) =>
   /^10\./.test(ip) || /^192\.168\./.test(ip) || /^169\.254\./.test(ip) ||
-  /^172\.(1[6-9]|2\d|3[01])\./.test(ip);
+  /^172\.(1[6-9]|2\d|3[01])\./.test(ip) ||
+  // CGNAT 100.64.0.0/10 — Tailscale and similar mesh-VPN adapters live here,
+  // and it's often this machine's primary non-internal IPv4. Without it the
+  // server advertises a LAN URL its own host/origin gate then 403s.
+  /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(ip);
 
 // Opt-in: when data/config.json has "lanAccess": true we bind to the network and
 // accept same-network requests (still login-gated). Default OFF — the dashboard
@@ -250,8 +254,14 @@ function overviewPayload(projects) {
   const totals = { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 };
   let cost = 0, billableTokens = 0, sessions = 0, live = 0, liveSubagents = 0, toolCalls = 0;
   const modelTokens = {};
+  const modelStats = {};
+  let subagentTokens = 0, subagentCost = 0, thinkingTokens = 0;
   const daily = {};
   const modelDaily = {}; // 'YYYY-MM-DD' -> { model: tokens }
+  const addStats = (dst, src) => { for (const [k, v] of Object.entries(src)) {
+    if (k === 'effort') { dst.effort = dst.effort || {}; for (const [e, n] of Object.entries(v || {})) dst.effort[e] = (dst.effort[e] || 0) + n; }
+    else dst[k] = (dst[k] || 0) + v;
+  } };
   for (const p of projects) {
     totals.input += p.tokens.input;
     totals.output += p.tokens.output;
@@ -263,7 +273,14 @@ function overviewPayload(projects) {
     live += p.liveCount;
     liveSubagents += p.liveSubagents || 0;
     toolCalls += p.toolCalls;
+    subagentTokens += p.subagentTokens || 0;
+    subagentCost += p.subagentCost || 0;
+    thinkingTokens += p.thinkingTokens || 0;
     for (const [m, t] of Object.entries(p.modelTokens)) modelTokens[m] = (modelTokens[m] || 0) + t;
+    for (const [m, st] of Object.entries(p.modelStats || {})) {
+      if (!modelStats[m]) modelStats[m] = {};
+      addStats(modelStats[m], st);
+    }
     for (const [d, t] of Object.entries(p.daily)) daily[d] = (daily[d] || 0) + t;
     for (const [d, mm] of Object.entries(p.dailyModel || {})) {
       if (!modelDaily[d]) modelDaily[d] = {};
@@ -273,10 +290,21 @@ function overviewPayload(projects) {
   return {
     generatedAt: Date.now(),
     plan: readPlan(),
-    totals: { cost, billableTokens, sessions, live, liveSubagents, toolCalls, tokens: totals },
+    totals: { cost, billableTokens, sessions, live, liveSubagents, toolCalls, tokens: totals,
+      subagentTokens, subagentCost, thinkingTokens },
     models: Object.entries(modelTokens)
-      .filter(([, tokens]) => tokens > 0)
-      .map(([model, tokens]) => ({ model, label: prettyModel(model), tokens }))
+      .filter(([mm, tokens]) => tokens > 0 && mm !== '<synthetic>')
+      .map(([model, tokens]) => {
+        const st = modelStats[model] || {};
+        return { model, label: prettyModel(model), tokens,
+          cost: st.cost || 0, msgs: st.msgs || 0, sessions: st.sessions || 0,
+          thinking: st.thinking || 0, output: st.output || 0,
+          cacheRead: st.cacheRead || 0, cacheCreation: st.cacheCreation || 0,
+          cacheCreation5m: st.cacheCreation5m || 0, cacheCreation1h: st.cacheCreation1h || 0,
+          fastTokens: st.fastTokens || 0, fastMsgs: st.fastMsgs || 0,
+          webSearch: st.webSearch || 0, webFetch: st.webFetch || 0,
+          effort: st.effort || {}, pricing: priceMeta(model) };
+      })
       .sort((a, b) => b.tokens - a.tokens),
     daily,
     modelDaily,
@@ -292,6 +320,8 @@ function overviewPayload(projects) {
       toolCalls: p.toolCalls,
       lastActivity: p.lastActivity,
       modelTokens: p.modelTokens,
+      subagentTokens: p.subagentTokens || 0,
+      subagentCost: p.subagentCost || 0,
       daily: p.daily,
     })),
   };
@@ -325,12 +355,14 @@ function accountPayload() {
   const hourly = new Array(24).fill(0);
   const dow = new Array(7).fill(0);
   const heat = Array.from({ length: 7 }, () => new Array(24).fill(0)); // [day][hour] tokens
-  const comp = { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 }; // token composition
+  const comp = { input: 0, output: 0, cacheCreation: 0, cacheRead: 0,
+    cacheCreation5m: 0, cacheCreation1h: 0, thinking: 0 }; // token composition
   const dailyTok = {}, dailyCost = {};
   const sessionSizes = []; // billable tokens per session, for the distribution histogram
   const modelCacheRead = {}; // model -> cache-read tokens, for cache-savings math
   const activeDays = new Set();
   let win5Tok = 0, win5Msgs = 0, firstTs = Infinity;
+  let subTok = 0, subCost = 0;
   const range = { today: { tokens: 0, cost: 0 }, week: { tokens: 0, cost: 0 }, month: { tokens: 0, cost: 0 } };
   const allMsgs = [];
 
@@ -341,6 +373,10 @@ function accountPayload() {
     liveSubagents += p.liveSubagents || 0;
     comp.input += p.tokens.input; comp.output += p.tokens.output;
     comp.cacheCreation += p.tokens.cacheCreation; comp.cacheRead += p.tokens.cacheRead;
+    comp.cacheCreation5m += p.tokens.cacheCreation5m || 0;
+    comp.cacheCreation1h += p.tokens.cacheCreation1h || 0;
+    comp.thinking += p.tokens.thinking || 0;
+    subTok += p.subagentTokens || 0; subCost += p.subagentCost || 0;
     for (const s of p.sessions) {
       if (s.billableTokens > 0) sessionSizes.push(s.billableTokens);
       for (const [m, info] of Object.entries(s.models || {})) {
@@ -394,7 +430,8 @@ function accountPayload() {
   return {
     generatedAt: now,
     plan: readPlan(),
-    totals: { tokens: allTok, cost: allCost, sessions, tools, live, liveSubagents, activeDays: activeDays.size, firstTs: firstTs === Infinity ? null : firstTs },
+    totals: { tokens: allTok, cost: allCost, sessions, tools, live, liveSubagents, activeDays: activeDays.size, firstTs: firstTs === Infinity ? null : firstTs,
+      subagentTokens: subTok, subagentCost: subCost },
     window5h: { tokens: win5Tok, messages: win5Msgs, peak: peak5 },
     ranges: { ...range, today: { ...range.today, peak: peakDay } },
     budgets: readConfig().budgets || {},
@@ -417,8 +454,12 @@ function accountPayload() {
 async function handleApi(req, res, pathname) {
   // ---- auth ----
   if (pathname === '/api/auth/status') {
+    const user = currentUser(req);
+    // Keep the browser cookie's Max-Age in step with the sliding server-side
+    // session renewal, so an actively-used login never hard-expires at day 30.
+    if (user) { const tok = parseCookies(req)['cc_session']; if (tok) setSessionCookie(res, tok); }
     return sendJson(res, 200, {
-      hasUsers: hasUsers(), user: currentUser(req),
+      hasUsers: hasUsers(), user,
       publicUrl: readConfig().publicUrl || null,
       lan: { active: LAN_ACCESS, ip: primaryLanIP(), port: PORT, url: lanUrl(), hasIdentity: !!ownerLanIdentity() },
     });
@@ -466,6 +507,53 @@ async function handleApi(req, res, pathname) {
 
   if (pathname === '/api/account') {
     return sendJson(res, 200, accountPayload());
+  }
+
+  // Per-model drill-down: tokens, exact cost, cache TTL split, thinking share,
+  // fast-mode usage, effort mix, server tool calls, and a per-model daily
+  // series — aggregated across every project (subagents included).
+  if (pathname === '/api/models') {
+    const projects = listProjects();
+    const agg = {}; // model -> stats
+    const dailyByModel = {}; // model -> day -> { tokens, cost }
+    for (const p of projects) {
+      for (const [m, st] of Object.entries(p.modelStats || {})) {
+        if (!agg[m]) agg[m] = { tokens: 0, cost: 0, msgs: 0, sessions: 0,
+          input: 0, output: 0, cacheCreation: 0, cacheRead: 0,
+          cacheCreation5m: 0, cacheCreation1h: 0, thinking: 0,
+          fastTokens: 0, fastMsgs: 0, webSearch: 0, webFetch: 0, effort: {} };
+        const t = agg[m];
+        for (const [k, v] of Object.entries(st)) {
+          if (k === 'effort') { for (const [e, n] of Object.entries(v || {})) t.effort[e] = (t.effort[e] || 0) + n; }
+          else t[k] += v;
+        }
+      }
+      for (const [day, mm] of Object.entries(p.dailyModel || {})) {
+        for (const [m, tok] of Object.entries(mm)) {
+          if (!dailyByModel[m]) dailyByModel[m] = {};
+          if (!dailyByModel[m][day]) dailyByModel[m][day] = { tokens: 0, cost: 0 };
+          dailyByModel[m][day].tokens += tok;
+        }
+      }
+      for (const [day, mm] of Object.entries(p.dailyModelCost || {})) {
+        for (const [m, c] of Object.entries(mm)) {
+          if (!dailyByModel[m]) dailyByModel[m] = {};
+          if (!dailyByModel[m][day]) dailyByModel[m][day] = { tokens: 0, cost: 0 };
+          dailyByModel[m][day].cost += c;
+        }
+      }
+    }
+    const models = Object.entries(agg).filter(([mm]) => mm !== '<synthetic>').map(([model, st]) => {
+      const inputSide = st.input + st.cacheCreation + st.cacheRead;
+      return {
+        model, label: prettyModel(model), ...st,
+        cacheHitRate: inputSide ? st.cacheRead / inputSide : 0,
+        thinkingShare: st.output ? st.thinking / st.output : 0,
+        pricing: priceMeta(model),
+        daily: dailyByModel[model] || {},
+      };
+    }).sort((a, b) => b.cost - a.cost);
+    return sendJson(res, 200, { generatedAt: Date.now(), models });
   }
 
   // Cost-saving recommendations derived from the local transcripts.
@@ -759,7 +847,7 @@ async function handleApi(req, res, pathname) {
     const body = await readBody(req);
     if (!body.session) return sendJson(res, 400, { error: 'session required' });
     const info = sessionPid(body.session);
-    if (!info) return sendJson(res, 404, { error: 'No recorded process for this session yet — it needs to run a tool once (so the hook can capture it) before it can be ended from here.' });
+    if (!info) return sendJson(res, 404, { error: 'No recorded process for this session. The logger hook captures a session PID on its first tool call — if the hooks were recently (re)installed, only sessions started since then can be ended from here.' });
     const result = killSessionPid(info.pid);
     return sendJson(res, result.ok ? 200 : 502, result);
   }

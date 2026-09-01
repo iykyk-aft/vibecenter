@@ -18,14 +18,16 @@ export function resolveGhBin() {
     );
   }
   for (const c of candidates) {
-    const r = spawnSync(c, ['--version'], { encoding: 'utf8', windowsHide: true });
+    const r = spawnSync(c, ['--version'], { encoding: 'utf8', windowsHide: true, timeout: 8000 });
     if (r.status === 0) { cachedGh = c; return c; }
   }
   return null;
 }
 
 function run(bin, args, cwd) {
-  const r = spawnSync(bin, args, { cwd, encoding: 'utf8', windowsHide: true });
+  // Timeout guard: gh's network calls (auth status / repo create --push) can
+  // hang and this runs on the single-threaded server — never block forever.
+  const r = spawnSync(bin, args, { cwd, encoding: 'utf8', windowsHide: true, timeout: 30000 });
   return { code: r.status, out: (r.stdout || '').trim(), err: (r.stderr || '').trim() };
 }
 

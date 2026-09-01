@@ -8,9 +8,9 @@ const ACTIVE_WINDOW_MS = 10 * 60 * 1000; // file touched in last 10 min = "live"
 // A running Task/Agent-tool subagent writes its own transcript at
 // <projectDir>/<sessionId>/subagents/**/agent-*.jsonl (nested one level deeper
 // under subagents/workflows/<id>/ for Workflow-tool runs), separate from the
-// parent session's own .jsonl. Only worth stat-walking those subdirectories for
-// sessions touched recently — a subagent can't still be running under a parent
-// that's been dormant for days.
+// parent session's own .jsonl. Those files ARE parsed for usage (they carry
+// nearly half of real spend); the time gate below bounds how long we keep
+// re-walking them for signature/liveness purposes.
 const SUBAGENT_SCAN_WINDOW_MS = 3 * 60 * 60 * 1000;
 
 // Parse cache: avoid re-reading a transcript whose mtime+size are unchanged.
@@ -27,7 +27,15 @@ function readJsonLines(file) {
 }
 
 function emptyUsage() {
-  return { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 };
+  return { input: 0, output: 0, cacheCreation: 0, cacheRead: 0,
+    cacheCreation5m: 0, cacheCreation1h: 0, thinking: 0 };
+}
+
+// Local-time day key, matching the Account view's bucketing (isoDay) so the
+// Overview and Account charts agree on what "a day" is.
+function localDay(epochMs) {
+  const d = new Date(epochMs);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 }
 
 function addUsage(target, u) {
@@ -36,6 +44,23 @@ function addUsage(target, u) {
   target.output += u.output_tokens || 0;
   target.cacheCreation += u.cache_creation_input_tokens || 0;
   target.cacheRead += u.cache_read_input_tokens || 0;
+  const cc = u.cache_creation || {};
+  target.cacheCreation5m += cc.ephemeral_5m_input_tokens || 0;
+  target.cacheCreation1h += cc.ephemeral_1h_input_tokens || 0;
+  target.thinking += (u.output_tokens_details && u.output_tokens_details.thinking_tokens) || 0;
+}
+
+// Meta / injected user entries we don't want to count or show as chat.
+const META_RE = /^<(command|local-command|system-reminder|user-prompt-submit|bash-|task-notification)/i;
+
+function userTextOf(message) {
+  const c = message.content;
+  if (typeof c === 'string') return c;
+  if (Array.isArray(c)) {
+    const t = c.find((b) => b.type === 'text');
+    return t ? String(t.text) : '';
+  }
+  return '';
 }
 
 function parseSession(file) {
@@ -55,18 +80,22 @@ function parseSession(file) {
   let lastTs = null;
   let userMessages = 0;
   let assistantMessages = 0;
-  let toolCalls = 0;
-  const perModel = {}; // model -> usage
-  const dailyTokens = {}; // YYYY-MM-DD -> token count
-  const dailyModel = {}; // YYYY-MM-DD -> { model: token count }
+  let cliVersion = null;
+  const perModel = {}; // model -> { usage, cost, msgs, fastTokens, fastMsgs, webSearch, webFetch, effort: {level: msgs} }
+  const dailyTokens = {}; // local YYYY-MM-DD -> token count
+  const dailyCost = {};   // local YYYY-MM-DD -> cost
+  const dailyModel = {};  // local YYYY-MM-DD -> { model: token count }
+  const dailyModelCost = {}; // local YYYY-MM-DD -> { model: cost }
   const toolBreakdown = {}; // tool name -> count
-  const msgTimes = []; // { t: epochMs, tok, cost } per deduped assistant message
-  const assistantById = new Map(); // dedupe streamed rewrites by message.id
+  const msgTimes = []; // per deduped assistant API response
+  const assistantById = new Map(); // message.id -> best usage-bearing copy
+  const blocksById = new Map();    // message.id -> Map(toolUseKey -> tool name)
 
   for (const o of lines) {
     if (o.cwd) cwd = o.cwd;
     if (o.gitBranch && o.gitBranch !== 'HEAD') gitBranch = o.gitBranch;
     if (o.type === 'ai-title' && o.title) title = o.title;
+    if (o.version) cliVersion = o.version;
 
     const ts = o.timestamp;
     if (ts) {
@@ -75,59 +104,102 @@ function parseSession(file) {
     }
 
     if (o.type === 'user' && o.message) {
-      userMessages++;
-      if (!firstUserText) {
-        const c = o.message.content;
-        if (typeof c === 'string') firstUserText = c.slice(0, 120);
-        else if (Array.isArray(c)) {
-          const t = c.find((b) => b.type === 'text');
-          if (t) firstUserText = String(t.text).slice(0, 120);
-        }
+      const text = (userTextOf(o.message) || '').trim();
+      // Count only genuine human messages — tool_result carriers and injected
+      // meta lines (<command…>, <system-reminder…>) are not "user messages".
+      if (text && !META_RE.test(text)) {
+        userMessages++;
+        if (!firstUserText) firstUserText = text.slice(0, 120);
       }
     }
 
-    if (o.type === 'assistant' && o.message && o.message.usage) {
-      // Claude Code rewrites each assistant message to the transcript many
-      // times as it streams — every copy carries the same usage. Dedupe by
-      // message.id (keeping the copy with the most output tokens = the
-      // completed stream) so each API response is counted exactly once.
+    if (o.type === 'assistant' && o.message) {
       const key = o.message.id || `req:${o.requestId || ''}:${ts || ''}`;
-      const out = o.message.usage.output_tokens || 0;
-      const prev = assistantById.get(key);
-      if (!prev || out >= prev.out) {
-        assistantById.set(key, { msg: o.message, ts: ts || lastTs, out });
+
+      // Current transcripts write one content block per line (several lines
+      // sharing one message.id); older ones rewrote the whole message
+      // cumulatively. Union tool_use blocks by their block id so tool counts
+      // are exact under both shapes.
+      if (Array.isArray(o.message.content)) {
+        let tus = blocksById.get(key);
+        for (const b of o.message.content) {
+          if (b.type !== 'tool_use') continue;
+          if (!tus) { tus = new Map(); blocksById.set(key, tus); }
+          tus.set(b.id || `${b.name}:${tus.size}`, b.name);
+        }
+      }
+
+      if (o.message.usage) {
+        // Every copy carries the same usage — count each API response exactly
+        // once, keeping the copy with the most output tokens (completed stream).
+        const out = o.message.usage.output_tokens || 0;
+        const prev = assistantById.get(key);
+        if (!prev || out >= prev.out) {
+          assistantById.set(key, { msg: o.message, ts: ts || lastTs, out, effort: o.effort || null });
+        }
       }
     }
   }
 
-  for (const { msg, ts } of assistantById.values()) {
+  let toolCalls = 0;
+  for (const tus of blocksById.values()) {
+    toolCalls += tus.size;
+    for (const name of tus.values()) toolBreakdown[name] = (toolBreakdown[name] || 0) + 1;
+  }
+
+  let webSearch = 0, webFetch = 0, thinkingTokens = 0, fastTokens = 0, fastMsgs = 0;
+  const effortCounts = {};
+  for (const { msg, ts, effort } of assistantById.values()) {
     assistantMessages++;
     const model = msg.model || 'unknown';
-    if (!perModel[model]) perModel[model] = emptyUsage();
-    addUsage(perModel[model], msg.usage);
     const u = msg.usage;
-    const tok = (u.input_tokens || 0) + (u.output_tokens || 0) + (u.cache_creation_input_tokens || 0);
-    const day = (ts || '').slice(0, 10);
-    if (day) {
-      dailyTokens[day] = (dailyTokens[day] || 0) + tok;
-      if (!dailyModel[day]) dailyModel[day] = {};
-      dailyModel[day][model] = (dailyModel[day][model] || 0) + tok;
+    const speed = u.speed === 'fast' ? 'fast' : 'standard';
+    if (!perModel[model]) {
+      perModel[model] = { usage: emptyUsage(), cost: 0, msgs: 0,
+        fastTokens: 0, fastMsgs: 0, webSearch: 0, webFetch: 0, effort: {} };
     }
+    const pm = perModel[model];
+    addUsage(pm.usage, u);
+    pm.msgs++;
+
+    const cc = u.cache_creation || {};
+    const cc5m = cc.ephemeral_5m_input_tokens || 0;
+    const cc1h = cc.ephemeral_1h_input_tokens || 0;
+    const think = (u.output_tokens_details && u.output_tokens_details.thinking_tokens) || 0;
+    const stu = u.server_tool_use || {};
+    pm.webSearch += stu.web_search_requests || 0;
+    pm.webFetch += stu.web_fetch_requests || 0;
+    webSearch += stu.web_search_requests || 0;
+    webFetch += stu.web_fetch_requests || 0;
+    thinkingTokens += think;
+    if (effort) { pm.effort[effort] = (pm.effort[effort] || 0) + 1; effortCounts[effort] = (effortCounts[effort] || 0) + 1; }
+
+    const tok = (u.input_tokens || 0) + (u.output_tokens || 0) + (u.cache_creation_input_tokens || 0);
+    if (speed === 'fast') { pm.fastTokens += tok; pm.fastMsgs++; fastTokens += tok; fastMsgs++; }
+
     const mcost = costFor(model, {
       input: u.input_tokens || 0, output: u.output_tokens || 0,
       cacheCreation: u.cache_creation_input_tokens || 0, cacheRead: u.cache_read_input_tokens || 0,
-    });
+      cacheCreation5m: cc5m, cacheCreation1h: cc1h,
+    }, { speed });
+    pm.cost += mcost;
+
+    const t = ts ? Date.parse(ts) : 0;
+    if (t) {
+      const day = localDay(t);
+      dailyTokens[day] = (dailyTokens[day] || 0) + tok;
+      dailyCost[day] = (dailyCost[day] || 0) + mcost;
+      if (!dailyModel[day]) dailyModel[day] = {};
+      dailyModel[day][model] = (dailyModel[day][model] || 0) + tok;
+      if (!dailyModelCost[day]) dailyModelCost[day] = {};
+      dailyModelCost[day][model] = (dailyModelCost[day][model] || 0) + mcost;
+    }
     msgTimes.push({
-      t: ts ? Date.parse(ts) : 0, tok, cost: mcost, model,
+      t, tok, cost: mcost, model,
       cacheCreation: u.cache_creation_input_tokens || 0,
       cacheRead: u.cache_read_input_tokens || 0,
+      cache1h: cc1h, thinking: think, speed,
     });
-    if (Array.isArray(msg.content)) {
-      for (const b of msg.content) if (b.type === 'tool_use') {
-        toolCalls++;
-        toolBreakdown[b.name] = (toolBreakdown[b.name] || 0) + 1;
-      }
-    }
   }
 
   // Aggregate tokens + cost across models.
@@ -136,15 +208,14 @@ function parseSession(file) {
   let primaryModel = null;
   let primaryModelTokens = -1;
   const models = {};
-  for (const [model, u] of Object.entries(perModel)) {
-    totals.input += u.input;
-    totals.output += u.output;
-    totals.cacheCreation += u.cacheCreation;
-    totals.cacheRead += u.cacheRead;
-    const c = costFor(model, u);
-    cost += c;
+  for (const [model, pm] of Object.entries(perModel)) {
+    const u = pm.usage;
+    for (const k of Object.keys(totals)) totals[k] += u[k] || 0;
+    cost += pm.cost;
     const mTok = u.input + u.output + u.cacheCreation;
-    models[model] = { usage: u, cost: c, tokens: mTok };
+    models[model] = { usage: u, cost: pm.cost, tokens: mTok, msgs: pm.msgs,
+      fastTokens: pm.fastTokens, fastMsgs: pm.fastMsgs,
+      webSearch: pm.webSearch, webFetch: pm.webFetch, effort: pm.effort };
     if (mTok > primaryModelTokens) { primaryModelTokens = mTok; primaryModel = model; }
   }
 
@@ -169,8 +240,17 @@ function parseSession(file) {
     cost,
     models,
     primaryModel,
+    thinkingTokens,
+    fastTokens,
+    fastMsgs,
+    webSearch,
+    webFetch,
+    effortCounts,
+    cliVersion,
     dailyTokens,
+    dailyCost,
     dailyModel,
+    dailyModelCost,
     toolBreakdown,
     msgTimes,
   };
@@ -187,24 +267,117 @@ function decodeDirName(name) {
   return name;
 }
 
+// ---- subagent transcripts ---------------------------------------------------
+// Everything a session's Task/Agent/Workflow subagents burned, from
+// <projectDir>/<sessionId>/subagents/**/*.jsonl (journal.jsonl is workflow
+// bookkeeping, not a transcript).
+function listSubagentFiles(dir, out) {
+  let entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
+  catch { return out; }
+  for (const e of entries) {
+    const full = path.join(dir, e.name);
+    if (e.isDirectory()) { listSubagentFiles(full, out); continue; }
+    if (e.name.endsWith('.jsonl') && e.name !== 'journal.jsonl') out.push(full);
+  }
+  return out;
+}
+
+const mergeNumMap = (dst, src) => { for (const [k, v] of Object.entries(src || {})) dst[k] = (dst[k] || 0) + v; };
+const mergeNestedNumMap = (dst, src) => {
+  for (const [k, mm] of Object.entries(src || {})) {
+    if (!dst[k]) dst[k] = {};
+    mergeNumMap(dst[k], mm);
+  }
+};
+
+// Merge parsed subagent transcripts into a session view. Never mutates the
+// cached per-file parse results — builds a fresh object.
+function withSubagents(main, subDatas) {
+  if (!subDatas.length) return { ...main, subagentCount: 0, subagentTokens: 0, subagentCost: 0 };
+  const s = {
+    ...main,
+    tokens: { ...main.tokens },
+    models: {},
+    dailyTokens: { ...main.dailyTokens },
+    dailyCost: { ...main.dailyCost },
+    dailyModel: {}, dailyModelCost: {},
+    toolBreakdown: { ...main.toolBreakdown },
+    effortCounts: { ...main.effortCounts },
+    msgTimes: [...main.msgTimes],
+    subagentCount: subDatas.length,
+    subagentTokens: 0,
+    subagentCost: 0,
+  };
+  for (const [m, info] of Object.entries(main.models)) s.models[m] = { ...info, usage: { ...info.usage }, effort: { ...info.effort } };
+  mergeNestedNumMap(s.dailyModel, main.dailyModel);
+  mergeNestedNumMap(s.dailyModelCost, main.dailyModelCost);
+
+  for (const sub of subDatas) {
+    s.subagentTokens += sub.billableTokens;
+    s.subagentCost += sub.cost;
+    s.cost += sub.cost;
+    s.billableTokens += sub.billableTokens;
+    s.toolCalls += sub.toolCalls;
+    s.assistantMessages += sub.assistantMessages;
+    s.thinkingTokens += sub.thinkingTokens;
+    s.fastTokens += sub.fastTokens;
+    s.fastMsgs += sub.fastMsgs;
+    s.webSearch += sub.webSearch;
+    s.webFetch += sub.webFetch;
+    for (const k of Object.keys(s.tokens)) s.tokens[k] += sub.tokens[k] || 0;
+    mergeNumMap(s.dailyTokens, sub.dailyTokens);
+    mergeNumMap(s.dailyCost, sub.dailyCost);
+    mergeNestedNumMap(s.dailyModel, sub.dailyModel);
+    mergeNestedNumMap(s.dailyModelCost, sub.dailyModelCost);
+    mergeNumMap(s.toolBreakdown, sub.toolBreakdown);
+    mergeNumMap(s.effortCounts, sub.effortCounts);
+    for (const [m, info] of Object.entries(sub.models)) {
+      if (!s.models[m]) {
+        s.models[m] = { usage: emptyUsage(), cost: 0, tokens: 0, msgs: 0,
+          fastTokens: 0, fastMsgs: 0, webSearch: 0, webFetch: 0, effort: {} };
+      }
+      const t = s.models[m];
+      for (const k of Object.keys(t.usage)) t.usage[k] += info.usage[k] || 0;
+      t.cost += info.cost; t.tokens += info.tokens; t.msgs += info.msgs;
+      t.fastTokens += info.fastTokens; t.fastMsgs += info.fastMsgs;
+      t.webSearch += info.webSearch; t.webFetch += info.webFetch;
+      mergeNumMap(t.effort, info.effort);
+    }
+    for (const m of sub.msgTimes) s.msgTimes.push({ ...m, sub: 1 });
+  }
+  return s;
+}
+
 // Memoize the full cross-project aggregation. parseSession already skips
 // re-reading unchanged files, but the aggregation below re-runs on every call —
 // and the live UI calls listProjects() from several endpoints every few seconds.
-// Key the memo on a cheap signature (each transcript's mtime+size); a single
-// stat-walk is far cheaper than re-aggregating, and it auto-invalidates the
-// instant any session is written, added, or removed.
+// Key the memo on a cheap signature (each transcript's mtime+size, including
+// subagent transcripts of recently-touched sessions); it auto-invalidates the
+// instant any session or live subagent is written, added, or removed.
 let projectsMemo = { sig: null, data: null };
 
 function projectsSignature() {
   const dirs = fs.readdirSync(PROJECTS_DIR, { withFileTypes: true }).filter((d) => d.isDirectory());
   const parts = [];
+  const now = Date.now();
   for (const d of dirs) {
     const dirPath = path.join(PROJECTS_DIR, d.name);
     let files;
     try { files = fs.readdirSync(dirPath); } catch { continue; }
     for (const f of files) {
       if (!f.endsWith('.jsonl')) continue;
-      try { const st = fs.statSync(path.join(dirPath, f)); parts.push(`${d.name}/${f}:${st.mtimeMs}:${st.size}`); } catch { /* vanished mid-walk */ }
+      let st;
+      try { st = fs.statSync(path.join(dirPath, f)); } catch { continue; /* vanished mid-walk */ }
+      parts.push(`${d.name}/${f}:${st.mtimeMs}:${st.size}`);
+      // Subagent transcripts only change while their parent session is (or was
+      // very recently) running — only those need to be able to bust the memo.
+      if ((now - st.mtimeMs) < SUBAGENT_SCAN_WINDOW_MS) {
+        const subDir = path.join(dirPath, path.basename(f, '.jsonl'), 'subagents');
+        for (const sf of listSubagentFiles(subDir, [])) {
+          try { const sst = fs.statSync(sf); parts.push(`${sf}:${sst.mtimeMs}:${sst.size}`); } catch { /* vanished */ }
+        }
+      }
     }
   }
   return parts.join('|');
@@ -275,7 +448,12 @@ function computeProjects() {
     if (files.length === 0) continue;
 
     const sessions = files.map((f) => {
-      try { return parseSession(path.join(dirPath, f)); }
+      try {
+        const main = parseSession(path.join(dirPath, f));
+        const subFiles = listSubagentFiles(path.join(dirPath, path.basename(f, '.jsonl'), 'subagents'), []);
+        const subDatas = subFiles.map((sf) => { try { return parseSession(sf); } catch { return null; } }).filter(Boolean);
+        return withSubagents(main, subDatas);
+      }
       catch { return null; }
     }).filter(Boolean).sort((a, b) => b.mtime - a.mtime);
 
@@ -286,31 +464,48 @@ function computeProjects() {
     const cwdCounts = {};
     for (const s of sessions) if (s.cwd) cwdCounts[s.cwd] = (cwdCounts[s.cwd] || 0) + 1;
     const cwd = Object.entries(cwdCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || decodeDirName(d.name);
-    const totals = { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 };
+    const totals = emptyUsage();
     let cost = 0, toolCalls = 0, billableTokens = 0;
+    let subagentTokens = 0, subagentCost = 0, thinkingTokens = 0;
     const modelTokens = {};
+    const modelStats = {}; // model -> full per-model aggregate for this app
     const daily = {};
+    const dailyCost = {};
     const dailyModel = {};
+    const dailyModelCost = {};
     let lastActivity = 0;
     for (const s of sessions) {
-      totals.input += s.tokens.input;
-      totals.output += s.tokens.output;
-      totals.cacheCreation += s.tokens.cacheCreation;
-      totals.cacheRead += s.tokens.cacheRead;
+      for (const k of Object.keys(totals)) totals[k] += s.tokens[k] || 0;
       cost += s.cost;
       toolCalls += s.toolCalls;
       billableTokens += s.billableTokens;
+      subagentTokens += s.subagentTokens || 0;
+      subagentCost += s.subagentCost || 0;
+      thinkingTokens += s.thinkingTokens || 0;
       if (s.mtime > lastActivity) lastActivity = s.mtime;
       for (const [m, info] of Object.entries(s.models)) {
         modelTokens[m] = (modelTokens[m] || 0) + info.tokens;
+        if (!modelStats[m]) {
+          modelStats[m] = { tokens: 0, cost: 0, msgs: 0, sessions: 0,
+            input: 0, output: 0, cacheCreation: 0, cacheRead: 0,
+            cacheCreation5m: 0, cacheCreation1h: 0, thinking: 0,
+            fastTokens: 0, fastMsgs: 0, webSearch: 0, webFetch: 0, effort: {} };
+        }
+        const t = modelStats[m];
+        t.tokens += info.tokens; t.cost += info.cost; t.msgs += info.msgs; t.sessions++;
+        t.input += info.usage.input; t.output += info.usage.output;
+        t.cacheCreation += info.usage.cacheCreation; t.cacheRead += info.usage.cacheRead;
+        t.cacheCreation5m += info.usage.cacheCreation5m || 0;
+        t.cacheCreation1h += info.usage.cacheCreation1h || 0;
+        t.thinking += info.usage.thinking || 0;
+        t.fastTokens += info.fastTokens; t.fastMsgs += info.fastMsgs;
+        t.webSearch += info.webSearch; t.webFetch += info.webFetch;
+        mergeNumMap(t.effort, info.effort);
       }
-      for (const [day, tok] of Object.entries(s.dailyTokens)) {
-        daily[day] = (daily[day] || 0) + tok;
-      }
-      for (const [day, mm] of Object.entries(s.dailyModel || {})) {
-        if (!dailyModel[day]) dailyModel[day] = {};
-        for (const [m, tok] of Object.entries(mm)) dailyModel[day][m] = (dailyModel[day][m] || 0) + tok;
-      }
+      mergeNumMap(daily, s.dailyTokens);
+      mergeNumMap(dailyCost, s.dailyCost);
+      mergeNestedNumMap(dailyModel, s.dailyModel);
+      mergeNestedNumMap(dailyModelCost, s.dailyModelCost);
     }
 
     projects.push({
@@ -325,9 +520,15 @@ function computeProjects() {
       billableTokens,
       toolCalls,
       tokens: totals,
+      subagentTokens,
+      subagentCost,
+      thinkingTokens,
       modelTokens,
+      modelStats,
       daily,
+      dailyCost,
       dailyModel,
+      dailyModelCost,
       sessions,
     });
   }
@@ -347,14 +548,17 @@ export function getProject(id) {
   return listProjects().find((p) => p.id === id) || null;
 }
 
-// Injected/meta user entries we don't want to show as chat.
-const META_RE = /^<(command|local-command|system-reminder|user-prompt-submit|bash-)/i;
-
 // Reconstruct the human-readable conversation for one session. Cached by
 // mtime+size: the live UI re-polls this every ~800ms, and re-reading a
 // multi-MB transcript each time is wasteful when it hasn't grown. While a
 // session streams, the file changes (size/mtime), so the cache correctly
 // refreshes; once it goes quiet, polls become a single stat.
+//
+// Transcript shapes handled:
+//  • old: each assistant API response rewritten cumulatively (same message.id,
+//    each rewrite's text extending the previous) → keep the longest copy.
+//  • current: one content block per line, several lines per message.id
+//    ([thinking], [text], one line per [tool_use]) → merge blocks into one row.
 const chatCache = new Map(); // file -> { sig, msgs }
 export function readSessionChat(projectId, sessionId) {
   const file = path.join(PROJECTS_DIR, projectId, sessionId + '.jsonl');
@@ -365,7 +569,8 @@ export function readSessionChat(projectId, sessionId) {
   if (hit && hit.sig === sig) return hit.msgs;
   const lines = readJsonLines(file);
   const msgs = [];
-  let lastAssistantId = null;
+  const rowById = new Map(); // assistant message.id -> row (rows merge across lines)
+  let anon = 0;
   for (const o of lines) {
     if (o.type === 'user' && o.message) {
       const c = o.message.content;
@@ -374,21 +579,29 @@ export function readSessionChat(projectId, sessionId) {
       else if (Array.isArray(c)) text = c.filter((b) => b.type === 'text').map((b) => b.text).join('\n');
       text = (text || '').trim();
       if (text && !META_RE.test(text)) msgs.push({ role: 'user', text, ts: o.timestamp });
-      lastAssistantId = null;
     } else if (o.type === 'assistant' && o.message) {
-      const id = o.message.id;
-      const blocks = o.message.content || [];
-      const text = blocks.filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim();
-      const tools = blocks.filter((b) => b.type === 'tool_use').map((b) => b.name);
-      if (id && id === lastAssistantId) {
-        const last = msgs[msgs.length - 1]; // streamed rewrite → update final state
-        if (last && last.role === 'assistant') { last.text = text; last.tools = tools; }
-      } else if (text || tools.length) {
-        msgs.push({ role: 'assistant', text, tools, ts: o.timestamp });
-        lastAssistantId = id;
+      const id = o.message.id || `anon:${anon++}`;
+      let row = rowById.get(id);
+      if (!row) {
+        row = { role: 'assistant', text: '', tools: [], ts: o.timestamp, _tu: new Set() };
+        rowById.set(id, row);
+        msgs.push(row);
+      }
+      for (const b of o.message.content || []) {
+        if (b.type === 'text') {
+          const t = String(b.text || '').trim();
+          if (!t) continue;
+          if (t.startsWith(row.text)) row.text = t;             // cumulative rewrite → keep longest
+          else if (!row.text.includes(t)) row.text = row.text ? row.text + '\n\n' + t : t; // new fragment
+        } else if (b.type === 'tool_use') {
+          const k = b.id || b.name;
+          if (!row._tu.has(k)) { row._tu.add(k); row.tools.push(b.name); }
+        }
       }
     }
   }
-  chatCache.set(file, { sig, msgs });
-  return msgs;
+  const cleaned = msgs.filter((m) => m.role === 'user' || m.text || (m.tools && m.tools.length));
+  for (const m of cleaned) delete m._tu;
+  chatCache.set(file, { sig, msgs: cleaned });
+  return cleaned;
 }

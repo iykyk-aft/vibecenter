@@ -24,9 +24,15 @@ export function resolveClaudeBin(override) {
     }
   } catch { /* no extensions dir */ }
 
-  // Desktop app bundle.
-  candidates.push(path.join(os.homedir(), 'AppData', 'Local', 'Packages',
-    'Claude_pzs8sxrjxfjjc', 'LocalCache', 'Roaming', 'Claude', 'claude-code'));
+  // Desktop app bundle — versioned: claude-code/<version>/claude.exe.
+  const deskRoot = path.join(os.homedir(), 'AppData', 'Local', 'Packages',
+    'Claude_pzs8sxrjxfjjc', 'LocalCache', 'Roaming', 'Claude', 'claude-code');
+  try {
+    const versions = fs.readdirSync(deskRoot)
+      .filter((v) => /^d+.d+.d+$/.test(v))
+      .sort((x, y) => cmpVer(y, x));
+    for (const v of versions) candidates.push(path.join(deskRoot, v, exe));
+  } catch { /* desktop app not installed */ }
 
   for (const c of candidates) {
     if (fs.existsSync(c)) { cachedBin = c; return c; }

@@ -10,12 +10,21 @@ import crypto from 'node:crypto';
 const AUTH_FILE = process.env.CC_AUTH_FILE || path.join(process.cwd(), 'data', 'auth.json');
 const SESSION_TTL = 30 * 86400e3; // 30 days
 
+let lastGoodStore = null;
 function read() {
   try {
     const d = JSON.parse(fs.readFileSync(AUTH_FILE, 'utf8'));
     if (!d.invites) d.invites = [];
+    lastGoodStore = d;
     return d;
-  } catch { return { users: [], sessions: {}, invites: [] }; }
+  } catch (e) {
+    if (e && e.code === 'ENOENT') return { users: [], sessions: {}, invites: [] }; // fresh install
+    // Corrupt or unreadable store: fail CLOSED. Serve the last good copy if we
+    // have one; otherwise report a locked store so the auth gate stays up
+    // (hasUsers() true) instead of silently offering owner re-registration.
+    if (lastGoodStore) return lastGoodStore;
+    return { users: [], sessions: {}, invites: [], _readError: true };
+  }
 }
 function write(d) {
   fs.mkdirSync(path.dirname(AUTH_FILE), { recursive: true });
@@ -35,7 +44,7 @@ function deriveLanKey(email, password) {
 }
 const lanIdOf = (key) => crypto.createHash('sha256').update('id:' + key).digest('hex').slice(0, 24);
 
-export function hasUsers() { return read().users.length > 0; }
+export function hasUsers() { const d = read(); return d.users.length > 0 || d._readError === true; }
 
 export function registerUser(email, password, invite) {
   email = String(email || '').trim().toLowerCase();
@@ -115,9 +124,20 @@ export function destroySession(token) {
 export function userForToken(token) {
   if (!token) return null;
   const d = read();
+  if (d._readError) return null;
   const s = d.sessions[token];
   if (!s) return null;
-  if (s.exp < Date.now()) { delete d.sessions[token]; write(d); return null; }
+  const now = Date.now();
+  if (s.exp < now) { delete d.sessions[token]; write(d); return null; }
+  // Sliding renewal: any authenticated request in the last half of a session's
+  // life extends it back to the full TTL, so an actively-used login never
+  // silently expires at day 30 (also prune long-dead sessions while we hold
+  // the file).
+  if (s.exp - now < SESSION_TTL / 2) {
+    s.exp = now + SESSION_TTL;
+    for (const [t, sess] of Object.entries(d.sessions)) if (sess.exp < now) delete d.sessions[t];
+    write(d);
+  }
   const u = d.users.find((x) => x.id === s.userId);
   return u ? { id: u.id, email: u.email } : null;
 }

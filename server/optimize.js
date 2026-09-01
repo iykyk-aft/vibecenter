@@ -264,7 +264,7 @@ export function buildRecommendations({ projects, account, plan, budgets, runs })
   // re-READING it at 0.1× — a 12.5× difference on the same tokens. We flag each
   // message that follows a >5-min gap and carries a big cache write, and price
   // what a warm cache would have cost instead.
-  const TTL_MS = 5 * 60 * 1000;
+  const TTL_5M = 5 * 60 * 1000, TTL_1H = 60 * 60 * 1000;
   const CHURN_MIN_TOKENS = 20_000; // ignore small writes — genuinely new content
   let churnCostTotal = 0;
   const churny = []; // per-session churn summaries
@@ -276,10 +276,14 @@ export function buildRecommendations({ projects, account, plan, budgets, runs })
       let cold = 0, waste = 0, wasteTok = 0;
       for (let i = 1; i < times.length; i++) {
         const m = times[i];
-        if (m.t - times[i - 1].t <= TTL_MS || m.cacheCreation < CHURN_MIN_TOKENS) continue;
+        // Sessions writing 1h-TTL cache entries (the current Claude Code
+        // default) only go cold after an hour; legacy 5m writes after 5 min.
+        const ttl = (m.cache1h || 0) > 0 ? TTL_1H : TTL_5M;
+        if (m.t - times[i - 1].t <= ttl || m.cacheCreation < CHURN_MIN_TOKENS) continue;
         const model = m.model || s.primaryModel;
-        // Avoidable spend ≈ (write at 1.25×) − (read at 0.1×) on the same tokens.
-        waste += costFor(model, { cacheCreation: m.cacheCreation })
+        // Avoidable spend ≈ (write at its TTL rate) − (read at 0.1×) on the same tokens.
+        waste += costFor(model, { cacheCreation: m.cacheCreation, cacheCreation1h: m.cache1h || 0,
+                 cacheCreation5m: Math.max(0, m.cacheCreation - (m.cache1h || 0)) })
                - costFor(model, { cacheRead: m.cacheCreation });
         wasteTok += m.cacheCreation;
         cold++;
@@ -303,7 +307,7 @@ export function buildRecommendations({ projects, account, plan, budgets, runs })
       icon: '⏱️',
       title: 'Idle gaps are expiring your prompt cache',
       metric: `${money(churnCostTotal)} re-paid in expired-cache rewrites`,
-      detail: `Claude Code's prompt cache expires after ~5 minutes of inactivity. When you come back to a session after a longer pause, the next message re-writes the entire context at 1.25× input price instead of re-reading it at 0.1× — the same tokens cost ~12× more. Batch your follow-ups while a session is warm, queue related questions together instead of drip-feeding them, and when you plan to step away, wrap up the task first. Resuming later is fine — just know the first message back re-pays the full context write.`,
+      detail: `Claude Code's prompt cache expires after idle gaps (1 hour for current sessions' cache entries, ~5 minutes for older 5m-TTL ones). When you come back to a session after a longer pause, the next message re-writes the entire context at 1.25× input price instead of re-reading it at 0.1× — the same tokens cost ~12× more. Batch your follow-ups while a session is warm, queue related questions together instead of drip-feeding them, and when you plan to step away, wrap up the task first. Resuming later is fine — just know the first message back re-pays the full context write.`,
       estSavings: churnCostTotal * monthlyFactor,
       estNote: 'if post-gap messages had hit a warm cache, last 30d',
       list: top.map((s) => ({

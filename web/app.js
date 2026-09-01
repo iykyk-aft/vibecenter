@@ -395,8 +395,8 @@ function renderOverview(data) {
 
   const kpis = el('div', { class: 'kpi-grid' },
     kpi(metered ? 'Total Spend' : 'API-Equiv. Value', '💸', fmtCost(t.cost),
-      metered ? `${data.projects.length} applications` : `${planName(plan)} · flat fee`, 'pink'),
-    kpi('Billable Tokens', '🔢', fmtNum(t.billableTokens), `${fmtNum(t.tokens.cacheRead)} cache reads`, 'neon'),
+      t.subagentCost ? `${fmtCost(t.subagentCost)} by subagents` : (metered ? `${data.projects.length} applications` : `${planName(plan)} · flat fee`), 'pink'),
+    kpi('Billable Tokens', '🔢', fmtNum(t.billableTokens), t.subagentTokens ? `${fmtNum(t.subagentTokens)} by subagents` : `${fmtNum(t.tokens.cacheRead)} cache reads`, 'neon'),
     kpi('Sessions', '🗂️', String(t.sessions), `${t.live} live now`),
     kpi('Live', '🟢', String(t.live), t.live ? 'sessions active' : 'all idle'),
     kpi('Tool Calls', '🛠️', fmtNum(t.toolCalls), 'across all apps'));
@@ -421,6 +421,9 @@ function renderOverview(data) {
       stackedAreaChart(data.modelDaily, { labelOf: (m) => labelMap[m] || m.replace('claude-', '') })));
   }
 
+  // per-model drill-down (exact cost, cache, thinking, speed, effort)
+  v.append(modelDrilldownSection());
+
   // applications table
   const maxCost = Math.max(...data.projects.map((p) => p.cost), 0.0001);
   const rows = data.projects.map((p) => el('div', { class: 'app-row', onclick: () => navProject(p.id) },
@@ -437,6 +440,79 @@ function renderOverview(data) {
       el('button', { class: 'btn', style: 'margin-left:auto;padding:6px 13px;font-size:12px', onclick: () => openAddAppModal() }, '+ Add app')),
     el('div', { class: 'app-list' }, ...rows));
   v.append(table);
+}
+
+// ---- per-model drill-down ---------------------------------------------------
+// Exact per-model economics from /api/models: cost at true rates (1h vs 5m
+// cache writes, fast-mode premium), cache hit rate, thinking share, effort mix,
+// server tool calls, and a daily sparkline. Cached briefly so the periodic
+// overview refresh doesn't hammer the endpoint or flash empty cards.
+function modelDrilldownSection() {
+  const wrap = el('div', { class: 'card fade-in' },
+    el('div', { class: 'card-title' }, 'Model Drill-Down',
+      el('span', { class: 'muted' }, 'exact per-model economics · subagents included')));
+  const body = el('div', { style: 'display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px' });
+  wrap.append(body);
+  const cache = state.modelsCache;
+  if (cache && Date.now() - cache.ts < 15000) { fillModelCards(body, cache.data); return wrap; }
+  body.append(el('div', { class: 'empty' }, 'Loading model data…'));
+  api('/api/models').then((d) => {
+    if (!d || !Array.isArray(d.models)) { body.innerHTML = ''; body.append(el('div', { class: 'empty' }, 'No model data')); return; }
+    state.modelsCache = { ts: Date.now(), data: d };
+    body.innerHTML = '';
+    fillModelCards(body, d);
+  }).catch(() => { body.innerHTML = ''; body.append(el('div', { class: 'empty' }, 'Could not load /api/models')); });
+  return wrap;
+}
+
+const EFFORT_ORDER = ['low', 'medium', 'high', 'xhigh', 'max'];
+function fillModelCards(body, d) {
+  const models = (d.models || []).filter((m) => m.tokens > 0);
+  if (!models.length) { body.append(el('div', { class: 'empty' }, 'No model usage yet')); return; }
+  models.slice(0, 8).forEach((m, idx) => body.append(modelCard(m, COLORS[idx % COLORS.length])));
+}
+
+function modelStatRow(label, value) {
+  return el('div', { style: 'display:flex;justify-content:space-between;gap:10px;font-size:12px;padding:3px 0' },
+    el('span', { style: 'color:var(--muted)' }, label),
+    el('span', { style: 'font-weight:600' }, value));
+}
+
+function modelCard(m, color) {
+  const priceTag = m.pricing
+    ? `$${m.pricing.input}/$${m.pricing.output} per MTok${m.pricing.via === 'family' || m.pricing.via === 'default' ? ' · estimated' : ''}`
+    : '';
+  const writes = (m.cacheCreation5m || 0) + (m.cacheCreation1h || 0);
+  const ttlSplit = writes
+    ? `${Math.round(((m.cacheCreation1h || 0) / writes) * 100)}% at 1h TTL (2×)`
+    : (m.cacheCreation ? 'TTL unknown (older sessions)' : '—');
+  const effortBits = EFFORT_ORDER.filter((e) => m.effort && m.effort[e])
+    .map((e) => `${e} ${fmtNum(m.effort[e])}`).join(' · ');
+  const head = el('div', { style: 'display:flex;align-items:baseline;gap:10px;margin-bottom:6px' },
+    el('span', { style: `width:10px;height:10px;border-radius:3px;background:${color};flex:none` }),
+    el('div', { style: 'font-weight:800;font-size:15px' }, m.label),
+    el('div', { class: 'muted', style: 'font-size:11px;margin-left:auto' }, priceTag));
+  const big = el('div', { style: 'display:flex;gap:22px;align-items:baseline;margin-bottom:8px' },
+    el('div', {},
+      el('div', { class: 'kpi-value', style: 'font-size:24px' }, fmtCost(m.cost)),
+      el('div', { class: 'kpi-sub' }, 'exact cost')),
+    el('div', {},
+      el('div', { class: 'kpi-value neon', style: 'font-size:24px' }, fmtNum(m.tokens)),
+      el('div', { class: 'kpi-sub' }, 'billable tokens')));
+  const rows = el('div', {},
+    modelStatRow('Messages · sessions', `${fmtNum(m.msgs)} · ${m.sessions}`),
+    modelStatRow('Cache hit rate', `${((m.cacheHitRate || 0) * 100).toFixed(1)}%`),
+    modelStatRow('Cache writes', ttlSplit),
+    modelStatRow('Thinking share of output', `${((m.thinkingShare || 0) * 100).toFixed(1)}% (${fmtNum(m.thinking)})`),
+    m.fastMsgs ? modelStatRow('⚡ Fast mode', `${fmtNum(m.fastTokens)} tok · ${m.fastMsgs} msgs (premium rate)`) : null,
+    (m.webSearch || m.webFetch) ? modelStatRow('Web search / fetch', `${m.webSearch || 0} / ${m.webFetch || 0}`) : null,
+    effortBits ? modelStatRow('Effort mix', effortBits) : null);
+  const dailyTok = {};
+  for (const [day, v] of Object.entries(m.daily || {})) dailyTok[day] = v.tokens;
+  const spark = Object.keys(dailyTok).length > 1
+    ? el('div', { style: 'margin-top:8px' }, sparkline(dailyTok, { w: 260, h: 34 }))
+    : null;
+  return el('div', { class: 'card', style: 'margin:0' }, head, big, rows, spark);
 }
 
 function modelMix(models) {
@@ -665,7 +741,9 @@ function cumulative(map) {
 // ---- Fable/Mythos usage + prepaid credit ledger ----------------------------
 function prettyModelLabel(id) {
   if (!id) return 'Unknown';
-  return id.replace('claude-', '').replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  let m = String(id).replace(/\[1m\]\s*$/i, ' 1M').replace(/^claude[- ]/i, '').replace(/-\d{8}$/, '');
+  m = m.replace(/-(\d+)-(\d+)\b/, ' $1.$2');
+  return m.replace(/-/g, ' ').replace(/\s+/g, ' ').trim().replace(/\b\w/g, (c) => c.toUpperCase());
 }
 function hbarsCost(items) {
   const max = Math.max(...items.map((i) => i.value), 0.01);
@@ -796,7 +874,8 @@ async function renderAccount() {
 
   v.append(el('div', { class: 'kpi-grid' },
     kpi('Total Tokens', '🔢', fmtNum(a.totals.tokens), planName(plan), 'neon'),
-    kpi(metered ? 'Total Spend' : 'API-Equiv. Value', '💸', fmtCost(a.totals.cost), metered ? null : 'not metered', 'pink'),
+    kpi(metered ? 'Total Spend' : 'API-Equiv. Value', '💸', fmtCost(a.totals.cost),
+      a.totals.subagentCost ? `${fmtCost(a.totals.subagentCost)} by subagents` : (metered ? null : 'not metered'), 'pink'),
     kpi('Sessions', '🗂️', String(a.totals.sessions), a.totals.firstTs ? 'since ' + new Date(a.totals.firstTs).toLocaleDateString() : null),
     kpi('Live Now', '🟢', String(a.totals.live), a.totals.live ? 'sessions active' : 'all idle'),
     kpi('Live Subagents', '🤖', String(a.totals.liveSubagents), a.totals.liveSubagents ? 'agents running' : 'none running'),
@@ -869,6 +948,23 @@ async function renderAccount() {
         el('div', { class: 'kpi-value neon', style: 'font-size:34px' }, (cacheEff * 100).toFixed(1) + '%'),
         el('div', { class: 'kpi-sub' }, 'input served from cache (~0.1× price)')),
       el('div', { style: 'flex:1;min-width:260px' }, compositionBar(c)))));
+
+  // thinking + cache-write TTL economics
+  {
+    const cc = a.composition || {};
+    const writes = (cc.cacheCreation5m || 0) + (cc.cacheCreation1h || 0);
+    const pct1h = writes ? Math.round(((cc.cacheCreation1h || 0) / writes) * 100) : 0;
+    const thinkShare = cc.output ? ((cc.thinking || 0) / cc.output) * 100 : 0;
+    v.append(el('div', { class: 'card fade-in' },
+      el('div', { class: 'card-title' }, 'Model Economics', el('span', { class: 'muted' }, 'thinking · cache TTL · subagents')),
+      el('div', { class: 'stat-chips' },
+        statChip('🧠', 'Thinking tokens', fmtNum(cc.thinking || 0)),
+        statChip('⏱️', '1h-TTL cache writes (2×)', writes ? `${pct1h}%` : '—'),
+        statChip('🤖', 'Subagent tokens', fmtNum(a.totals.subagentTokens || 0)),
+        statChip('💸', 'Subagent spend', fmtCost(a.totals.subagentCost || 0))),
+      el('div', { class: 'kpi-sub', style: 'margin-top:8px' },
+        `Thinking is ${thinkShare.toFixed(1)}% of all output tokens. Cache writes split: ${fmtNum(cc.cacheCreation1h || 0)} at 1h TTL (billed 2× input) vs ${fmtNum(cc.cacheCreation5m || 0)} at 5m TTL (1.25×) — costs here use the exact split.`)));
+  }
 
   // cache savings
   const cacheCard = cacheSavingsCard(a.cache, a.totals.cost, metered);
@@ -1255,7 +1351,7 @@ function toolCard(ev) {
 async function streamContinue(projectId, sessionId, prompt, stream, status, body, btn, write, onSession, onStatus, signal) {
   const st = (s) => { if (onStatus) onStatus(s); };
   const restore = () => { btn.disabled = false; btn.textContent = sessionId ? '▶ Continue' : '▶ Start'; };
-  const gated = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Bash']);
+  const gated = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Bash', 'PowerShell']);
   const cards = {}; // tool_use id -> card
   let curText = null;
   const addText = (t) => {
@@ -2763,6 +2859,7 @@ async function refresh() {
   setTimeout(() => tick.classList.remove('spin'), 600);
   try {
     const data = await api('/api/overview');
+    if (!data || data.error || !data.totals) throw new Error((data && data.error) || 'bad overview payload');
     state.overview = data;
     buildProjectNav(data.projects);
     $('#updatedAt').textContent = 'updated ' + new Date(data.generatedAt).toLocaleTimeString();

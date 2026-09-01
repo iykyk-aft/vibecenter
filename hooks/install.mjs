@@ -18,10 +18,13 @@ const SPECS = {
   Notification: [{ command: LOGGER, matcher: '' }],
   PreToolUse: [
     { command: LOGGER, matcher: '*' },
-    { command: GATEWAY, matcher: 'Edit|Write|MultiEdit|NotebookEdit|Bash', timeout: 90 },
+    { command: GATEWAY, matcher: 'Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell', timeout: 90 },
   ],
 };
 const OURS = new Set([LOGGER, GATEWAY]);
+// Also match Command Center hook commands installed from a previous checkout
+// location (the project moving directories left stale absolute paths behind).
+const OURS_RE = /[\/\\]hooks[\/\\](logger|gateway)\.mjs"?$/i;
 
 const settings = JSON.parse(fs.readFileSync(SETTINGS, 'utf8'));
 fs.copyFileSync(SETTINGS, SETTINGS + '.cc-backup');
@@ -30,7 +33,7 @@ if (!settings.hooks) settings.hooks = {};
 for (const [event, specs] of Object.entries(SPECS)) {
   // Strip any prior Command Center entries so re-running stays clean.
   let groups = (settings.hooks[event] || []).map((g) => ({
-    ...g, hooks: (g.hooks || []).filter((h) => !OURS.has(h.command)),
+    ...g, hooks: (g.hooks || []).filter((h) => !OURS.has(h.command) && !OURS_RE.test(h.command || '')),
   })).filter((g) => (g.hooks || []).length > 0);
 
   if (!uninstall) {
@@ -46,6 +49,6 @@ for (const [event, specs] of Object.entries(SPECS)) {
 fs.writeFileSync(SETTINGS, JSON.stringify(settings, null, 2));
 console.log(uninstall
   ? '✓ Command Center hooks removed.'
-  : '✓ Command Center hooks installed:\n  • logger (Notification + PreToolUse) — live activity/approval feed\n  • gateway (PreToolUse: Edit/Write/MultiEdit/NotebookEdit/Bash) — approve from the dashboard');
+  : '✓ Command Center hooks installed:\n  • logger (Notification + PreToolUse) — live activity/approval feed\n  • gateway (PreToolUse: Edit/Write/MultiEdit/NotebookEdit/Bash/PowerShell) — approve from the dashboard');
 console.log(`  backup: ${SETTINGS}.cc-backup`);
 console.log('  Enable the gateway on the Approvals screen, then restart running sessions.');
