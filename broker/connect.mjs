@@ -16,15 +16,27 @@ const ROOT = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '..'
 const TOKEN = process.env.PAIR_TOKEN || process.argv[2];
 const BROKER = (process.env.BROKER_URL || process.argv[3] || 'http://localhost:7900').replace(/\/+$/, '');
 const AGENT = (process.env.AGENT_URL || 'http://localhost:7878').replace(/\/+$/, '');
+// The agent creates data/internal-token on ITS first start — which may be after
+// this bridge starts (autostart races, agent restarts, token rotation). Re-read
+// whenever we don't have one, and refresh periodically so a rotated token is
+// picked up without restarting the bridge.
 let INTERNAL = '';
-try { INTERNAL = fs.readFileSync(path.join(ROOT, 'data', 'internal-token'), 'utf8').trim(); } catch { /* agent not started yet */ }
+let internalReadAt = 0;
+function internalToken() {
+  const now = Date.now();
+  if (!INTERNAL || now - internalReadAt > 30000) {
+    internalReadAt = now;
+    try { INTERNAL = fs.readFileSync(path.join(ROOT, 'data', 'internal-token'), 'utf8').trim(); } catch { /* agent not started yet */ }
+  }
+  return INTERNAL;
+}
 
 if (!TOKEN) { console.error('Usage: node broker/connect.mjs <PAIR_TOKEN> [BROKER_URL]   (token from the website → Settings → Connect a machine)'); process.exit(1); }
 const libFor = (u) => (new URL(u).protocol === 'https:' ? https : http);
 
 function forward(msg) {
   const target = new URL(msg.path, AGENT);
-  const opts = { method: msg.method, headers: { ...(msg.headers || {}), 'X-CC-Internal': INTERNAL } };
+  const opts = { method: msg.method, headers: { ...(msg.headers || {}), 'X-CC-Internal': internalToken() } };
   const areq = libFor(AGENT).request(target, opts, (ares) => {
     const chunks = [];
     ares.on('data', (c) => chunks.push(c));

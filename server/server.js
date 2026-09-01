@@ -104,6 +104,12 @@ function clearSessionCookie(res) {
 }
 // Endpoints reachable without a session: auth itself, health, and the local
 // gateway hook (loopback-only, has no user session of its own).
+// The approval hook endpoints are session-exempt because the PreToolUse hook
+// has no login of its own — but the hook is always LOCAL. Only loopback
+// sockets (or the internal token, for the broker bridge path) may use them.
+const LOOPBACK_ADDRS = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+const localCallerOk = (req) =>
+  LOOPBACK_ADDRS.has(req.socket.remoteAddress) || req.headers['x-cc-internal'] === INTERNAL_TOKEN;
 const AUTH_EXEMPT = new Set([
   '/api/auth/status', '/api/auth/login', '/api/auth/register', '/api/auth/logout',
   '/api/health', '/api/approval-request', '/api/approval-poll',
@@ -126,7 +132,6 @@ const INTERNAL_TOKEN = loadInternalToken();
 // PreToolUse hook (hooks/gateway.mjs) creates entries and polls for the verdict;
 // the dashboard sets it. Lives in this process so hook ↔ dashboard share it.
 const pending = new Map(); // id -> { id, tool, input, cwd, project, session, ts, status, reason }
-let approvalSeq = 1;
 
 // Active dashboard-spawned Claude runs, so a session can be ended from anywhere
 // (its own pane, another tab, or the application page) — not just by closing the
@@ -875,11 +880,12 @@ async function handleApi(req, res, pathname) {
 
   // hook → register a tool call awaiting approval; returns id (or active:false)
   if (pathname === '/api/approval-request' && req.method === 'POST') {
+    if (!localCallerOk(req)) return sendJson(res, 403, { error: 'local hooks only' });
     const body = await readBody(req);
     if (!gatewayActiveFor(body.cwd)) return sendJson(res, 200, { active: false });
     // Always-allow (this workspace or globally) → tell the hook to approve now.
     if (gatewayModeFor(body.cwd) === 'auto') return sendJson(res, 200, { active: true, decision: 'allow' });
-    const id = 'ap-' + (approvalSeq++);
+    const id = 'ap-' + crypto.randomBytes(9).toString('base64url'); // unguessable — poll consumes verdicts
     pending.set(id, {
       id, tool: body.tool || null, input: body.input || null,
       cwd: body.cwd || null, project: body.project || null,
@@ -890,6 +896,7 @@ async function handleApi(req, res, pathname) {
 
   // hook → poll for the verdict
   if (pathname === '/api/approval-poll') {
+    if (!localCallerOk(req)) return sendJson(res, 403, { error: 'local hooks only' });
     const id = new URL(req.url, 'http://localhost').searchParams.get('id');
     const p = pending.get(id);
     if (!p) return sendJson(res, 200, { status: 'gone' });
@@ -920,7 +927,7 @@ function proxyToPeer(req, res, peer) {
   req.on('end', () => {
     const body = Buffer.concat(chunks);
     let target; try { target = new URL(req.url, peer.url); } catch { return sendJson(res, 502, { error: 'bad peer url' }); }
-    const headers = { 'X-CC-Account': accountAuthHeader() || '' };
+    const headers = { 'X-CC-Account': accountAuthHeader(req.method, target.pathname) || '' };
     if (req.headers['content-type']) headers['content-type'] = req.headers['content-type'];
     if (body.length) headers['content-length'] = body.length;
     const preq = http.request(target, { method: req.method, headers }, (pres) => {
@@ -1027,7 +1034,7 @@ const server = http.createServer(async (req, res) => {
       // on your behalf), OR the loopback internal token (the broker bridge / hooks).
       if (hasUsers() && !AUTH_EXEMPT.has(pathname) && !currentUser(req)
           && req.headers['x-cc-internal'] !== INTERNAL_TOKEN
-          && !verifyAccountHeader(req.headers['x-cc-account'])) {
+          && !verifyAccountHeader(req.headers['x-cc-account'], req.method, pathname)) {
         return sendJson(res, 401, { error: 'Sign in required.' });
       }
       // Viewing a linked LAN peer: relay this request to that machine's agent

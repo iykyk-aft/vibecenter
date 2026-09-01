@@ -24,9 +24,15 @@ if (-not (Running 7900)) {
   Start-Sleep -Seconds 3
 }
 
-# 3) Connect bridge — reuse the owner's stored pairing token
+# 3) Connect bridge — reuse the owner's stored pairing token. Idempotent: the
+# bridge holds no listening port, so detect it by command line instead.
+$bridgeUp = $false
+try {
+  $bridgeUp = [bool](Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction Stop |
+    Where-Object { $_.CommandLine -match 'connect\.mjs' })
+} catch { $bridgeUp = $false }
 $pairFile = Join-Path $root 'broker\data\pairings.json'
-if (Test-Path $pairFile) {
+if (-not $bridgeUp -and (Test-Path $pairFile)) {
   $token = (Get-Content $pairFile -Raw | ConvertFrom-Json).PSObject.Properties.Name | Select-Object -First 1
   if ($token) {
     $env:BROKER_URL = 'http://localhost:7900'

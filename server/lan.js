@@ -7,9 +7,12 @@
 //   • UDP announce (broadcast): { app, acct, mid, name, httpPort, ts }
 //       acct = a SHA-256 fingerprint of the account key (not the key itself);
 //       mid  = a random per-process machine id used for routing.
-//   • Per-request auth header to a peer's HTTP API: "<ts>.<hmac(key, ts)>" —
-//       a short-lived HMAC of the shared key, so a peer can prove "same account"
-//       without the key ever travelling in the clear.
+//   • Per-request auth header to a peer's HTTP API:
+//       "<ts>.<nonce>.<hmac(key, ts.nonce.METHOD path)>" — a short-lived,
+//       single-use HMAC of the shared key bound to the exact request, so a peer
+//       can prove "same account" without the key ever travelling in the clear,
+//       and an observed header can neither be replayed nor redirected to a
+//       different endpoint.
 //
 // The key never leaves the machine; only its fingerprint and time-bounded HMACs do.
 
@@ -99,25 +102,50 @@ export function findPeer(mid) {
 export function selfMid() { return MID; }
 
 // ---- per-request peer auth (HMAC of the shared key) ------------------------
+// Signed payload binds timestamp + a single-use nonce + the exact request
+// (method and path), so a captured header can't be replayed within the skew
+// window or redirected at a different endpoint. Both sides of a link must run
+// this format (older peers are rejected until they update — auto-sync pulls
+// the update on their next session start).
+const signedPayload = (ts, nonce, method, pathname) =>
+  `${ts}.${nonce}.${String(method || 'GET').toUpperCase()} ${pathname || '/'}`;
+
+// Nonces we've already accepted, pruned past the skew window: replay rejection.
+const seenNonces = new Map(); // nonce -> ts
+function pruneNonces() {
+  const cutoff = Date.now() - AUTH_SKEW_MS * 2;
+  for (const [n, t] of seenNonces) if (t < cutoff) seenNonces.delete(n);
+}
+
 // Outgoing: sign with our key so a peer accepts our proxied request.
-export function accountAuthHeader() {
+export function accountAuthHeader(method, pathname) {
   const id = getIdentity();
   if (!id) return null;
   const ts = Date.now();
-  const mac = crypto.createHmac('sha256', id.key).update(String(ts)).digest('hex');
-  return `${ts}.${mac}`;
+  const nonce = crypto.randomBytes(12).toString('hex');
+  const mac = crypto.createHmac('sha256', id.key)
+    .update(signedPayload(ts, nonce, method, pathname)).digest('hex');
+  return `${ts}.${nonce}.${mac}`;
 }
-// Incoming: verify a peer's header proves the same account (fresh + valid HMAC).
-export function verifyAccountHeader(value) {
+// Incoming: verify a peer's header proves the same account, is fresh, matches
+// THIS method+path, and hasn't been seen before.
+export function verifyAccountHeader(value, method, pathname) {
   if (!value || typeof value !== 'string') return false; // fast path: no header
   const id = getIdentity();
   if (!id) return false;
-  const dot = value.indexOf('.');
-  if (dot < 0) return false;
-  const ts = Number(value.slice(0, dot));
-  const mac = value.slice(dot + 1);
+  const parts = value.split('.');
+  if (parts.length !== 3) return false;
+  const ts = Number(parts[0]);
+  const nonce = parts[1];
+  const mac = parts[2];
   if (!Number.isFinite(ts) || Math.abs(Date.now() - ts) > AUTH_SKEW_MS) return false;
-  const expect = crypto.createHmac('sha256', id.key).update(String(ts)).digest('hex');
+  if (!/^[0-9a-f]{24}$/.test(nonce)) return false;
+  const expect = crypto.createHmac('sha256', id.key)
+    .update(signedPayload(ts, nonce, method, pathname)).digest('hex');
   const a = Buffer.from(mac, 'hex'); const b = Buffer.from(expect, 'hex');
-  return a.length === b.length && crypto.timingSafeEqual(a, b);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return false;
+  pruneNonces();
+  if (seenNonces.has(nonce)) return false; // replay
+  seenNonces.set(nonce, ts);
+  return true;
 }
