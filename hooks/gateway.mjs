@@ -6,6 +6,23 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import url from 'node:url';
+
+const HOOK_ROOT = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '..');
+// Proving possession of data/internal-token — not "my socket looks like
+// 127.0.0.1" — is what now makes this a *local* hook. Re-read periodically so a
+// rotated token is picked up without restarting Claude Code.
+let CC_INTERNAL = '';
+let ccInternalAt = 0;
+function ccInternal() {
+  const now = Date.now();
+  if (!CC_INTERNAL || now - ccInternalAt > 30000) {
+    ccInternalAt = now;
+    try { CC_INTERNAL = fs.readFileSync(path.join(HOOK_ROOT, 'data', 'internal-token'), 'utf8').trim(); }
+    catch { /* agent not started yet */ }
+  }
+  return CC_INTERNAL;
+}
 
 const BASE = process.env.CC_URL || 'http://localhost:7878';
 const TIMEOUT_MS = 50000; // stay under the hook's configured timeout
@@ -77,7 +94,7 @@ process.stdin.on('end', async () => {
   let reg;
   try {
     reg = await jfetch(`${BASE}/api/approval-request`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CC-Internal': ccInternal() },
       body: JSON.stringify({ tool: d.tool_name, input: summarize(d.tool_name, d.tool_input), cwd, project: base(cwd), session: d.session_id }),
     });
   } catch { rememberOff(cwd); return passthrough(); } // server down → never block
@@ -92,8 +109,9 @@ process.stdin.on('end', async () => {
   while (Date.now() < deadline) {
     await sleep(POLL_MS);
     let v;
-    try { v = await jfetch(`${BASE}/api/approval-poll?id=${encodeURIComponent(reg.id)}`); } catch { continue; }
+    try { v = await jfetch(`${BASE}/api/approval-poll?id=${encodeURIComponent(reg.id)}`, { headers: { 'X-CC-Internal': ccInternal() } }); } catch { continue; }
     if (!v) continue;
+    if (v.error) return passthrough(); // 403 / token mismatch -> normal Claude prompt, never block
     if (v.status === 'allow') return decide('allow', 'Approved from Command Center');
     if (v.status === 'deny') return decide('deny', v.reason || 'Denied from Command Center');
     if (v.status === 'gone') return passthrough();

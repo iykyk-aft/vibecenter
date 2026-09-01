@@ -14,6 +14,14 @@
   --bad: #ff5d6c;
   --radius: 18px;
   --shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+  /* iOS: resolve to 0px everywhere else, so every rule using them is a no-op
+     off-iOS. Requires viewport-fit=cover in index.html — without it, always 0. */
+  --sat: env(safe-area-inset-top, 0px);
+  --sar: env(safe-area-inset-right, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  --sal: env(safe-area-inset-left, 0px);
+  /* soft-keyboard height, published by keyboardInset() in app.js */
+  --kb: 0px;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -47,8 +55,8 @@ body { display: flex; }
 /* ---- sidebar ---- */
 .sidebar {
   position: relative; z-index: 2;
-  width: 264px; flex-shrink: 0; height: 100vh;
-  padding: 22px 16px;
+  width: 264px; flex-shrink: 0; height: 100vh; height: 100dvh;
+  padding: max(22px, var(--sat)) 16px calc(22px + var(--sab)) max(16px, var(--sal));
   display: flex; flex-direction: column;
   background: linear-gradient(180deg, rgba(14,16,30,0.92), rgba(8,9,17,0.92));
   border-right: 1px solid var(--glass-brd);
@@ -113,17 +121,17 @@ body { display: flex; }
 }
 
 /* ---- main ---- */
-.main { position: relative; z-index: 1; flex: 1; height: 100vh; display: flex; flex-direction: column; }
+.main { position: relative; z-index: 1; flex: 1; height: 100vh; height: 100dvh; display: flex; flex-direction: column; }
 .topbar {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 18px 28px; border-bottom: 1px solid var(--glass-brd);
+  padding: max(18px, var(--sat)) max(28px, var(--sar)) 18px 28px; border-bottom: 1px solid var(--glass-brd);
 }
 .crumb { font-size: 18px; font-weight: 700; letter-spacing: .2px; }
 .topbar-right { display: flex; align-items: center; gap: 12px; color: var(--dim); font-size: 12px; }
 .refresh-tick { display: inline-block; transition: transform .6s ease; }
 .refresh-tick.spin { transform: rotate(360deg); }
 
-.view { flex: 1; overflow-y: auto; padding: 26px 28px 60px; }
+.view { flex: 1; overflow-y: auto; padding: 26px max(28px, var(--sar)) calc(60px + var(--sab)) 28px; }
 
 /* ---- cards & grid ---- */
 .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 16px; margin-bottom: 22px; }
@@ -158,7 +166,7 @@ body { display: flex; }
 .card-title .muted { font-weight: 500; color: var(--dim); font-size: 11px; }
 
 /* ---- charts ---- */
-.chart-wrap { width: 100%; }
+.chart-wrap { width: 100%; touch-action: pan-y; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
 svg { display: block; width: 100%; overflow: visible; }
 .chart-ymax { position: absolute; top: 2px; left: 4px; font-size: 9.5px; color: var(--dim); pointer-events: none; }
 .chart-avg { position: absolute; right: 4px; transform: translateY(-50%); font-size: 9.5px; color: #ffc24b; opacity: .8; pointer-events: none; }
@@ -281,13 +289,13 @@ select option { background: #14162a; color: var(--text); }
 @media (max-width: 820px) {
   .menu-btn { display: inline-flex; align-items: center; justify-content: center; }
   /* sidebar becomes an off-canvas drawer */
-  .sidebar { position: fixed; top: 0; left: 0; height: 100vh; z-index: 60; transform: translateX(-100%); transition: transform .22s ease; box-shadow: 0 0 50px rgba(0,0,0,.6); }
+  .sidebar { position: fixed; top: 0; left: 0; height: 100vh; height: 100dvh; z-index: 60; transform: translateX(-100%); transition: transform .22s ease; box-shadow: 0 0 50px rgba(0,0,0,.6); }
   .sidebar.open { transform: none; }
   .main { width: 100%; }
-  .topbar { padding: max(12px, env(safe-area-inset-top)) 14px 12px; }
+  .topbar { padding: max(12px, var(--sat)) max(14px, var(--sar)) 12px max(14px, var(--sal)); }
   .crumb { font-size: 16px; }
   .updated-at { display: none; }
-  .view { padding: 16px 13px 84px; }
+  .view { padding: 16px max(13px, var(--sar)) calc(84px + var(--sab)) max(13px, var(--sal)); }
   .kpi-grid { grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; }
   .kpi-value { font-size: 24px; }
   .row, .row.two, .row.split { grid-template-columns: 1fr !important; }
@@ -305,11 +313,32 @@ select option { background: #14162a; color: var(--text); }
   .mode-opt { min-width: 0; }
   /* overlays */
   .modal-overlay { padding: 8px; }
-  .modal { width: 100%; height: 94vh; }
+  .modal { width: 100%; height: 94dvh; }
   .auth-overlay { padding: 14px; }
-  .approval-dock { right: 10px; left: 10px; width: auto; bottom: 10px; }
-  .update-bar { left: 10px; right: 10px; transform: none; top: 10px; }
+  .approval-dock { right: 10px; left: 10px; width: auto; bottom: calc(10px + var(--sab) + var(--kb)); }
+  .update-bar { left: 10px; right: 10px; transform: none; top: calc(10px + var(--sat)); }
   .detail-head { gap: 12px; }
+}
+/* ---- tablet portrait: iPad Air/Pro 11" (834) and iPad Pro 12.9/13" (1024).
+   Portrait-scoped on purpose — iPad landscape (1080/1133/1180/1194/1366) has
+   room for the full desktop layout and must not be degraded. A desktop browser
+   window is always landscape, so this tier is unreachable there. ---- */
+@media (min-width: 821px) and (max-width: 1180px) and (orientation: portrait) {
+  .sidebar { width: 208px; padding-right: 12px; }
+  .nav-item, .project-item { padding: 13px 10px; font-size: 13px; }
+  .topbar { padding: max(18px, var(--sat)) max(20px, var(--sar)) 18px 20px; }
+  .view { padding: 22px max(20px, var(--sar)) calc(60px + var(--sab)) 20px; }
+  .row.two, .row.split { grid-template-columns: 1fr; }
+  /* .app-row children: 1 name, 2 sparkline, 3 bar, 4 cost, 5 tokens, 6 ago */
+  .app-row { grid-template-columns: 1.8fr .9fr .9fr .9fr; }
+  .app-row > :nth-child(2), .app-row > :nth-child(3) { display: none; }
+  /* .session-row children: 1 title, 2 cost, 3 tokens, 4 tools, 5 ago */
+  .session-row { grid-template-columns: 2.4fr 1fr 1fr .8fr; }
+  .session-row > :nth-child(4) { display: none; }
+  .bench-rail { width: 200px; }
+  .bench-main.layout-split { grid-template-columns: minmax(0, 1fr); }
+  .bench-main.layout-split .bench-pane,
+  .bench-main.layout-grid .bench-pane { height: clamp(320px, 42dvh, 520px); }
 }
 @media (max-width: 470px) {
   .kpi-grid { grid-template-columns: 1fr; }
@@ -380,8 +409,8 @@ select option { background: #14162a; color: var(--text); }
 .stack-seg { height: 100%; transition: width .5s ease; min-width: 2px; }
 
 /* ---- session chat modal ---- */
-.modal-overlay { position: fixed; inset: 0; z-index: 50; background: rgba(4,5,12,.72); backdrop-filter: blur(6px); display: flex; align-items: center; justify-content: center; padding: 30px; animation: fadeIn .2s ease; }
-.modal { width: min(860px, 100%); height: min(86vh, 900px); display: flex; flex-direction: column; background: linear-gradient(180deg, rgba(18,20,38,.96), rgba(10,11,22,.98)); border: 1px solid var(--glass-brd); border-radius: 18px; box-shadow: var(--shadow); overflow: hidden; }
+.modal-overlay { position: fixed; inset: 0; z-index: 50; background: rgba(4,5,12,.72); backdrop-filter: blur(6px); display: flex; align-items: center; justify-content: center; padding: calc(30px + var(--sat)) calc(30px + var(--sar)) calc(30px + var(--sab) + var(--kb)) calc(30px + var(--sal)); animation: fadeIn .2s ease; }
+.modal { width: min(860px, 100%); height: min(86dvh, 900px); max-height: 100%; display: flex; flex-direction: column; background: linear-gradient(180deg, rgba(18,20,38,.96), rgba(10,11,22,.98)); border: 1px solid var(--glass-brd); border-radius: 18px; box-shadow: var(--shadow); overflow: hidden; }
 .modal-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--glass-brd); }
 .modal-title { font-weight: 700; font-size: 15px; }
 .modal-x { background: rgba(255,255,255,.06); border: none; color: var(--muted); width: 30px; height: 30px; border-radius: 9px; cursor: pointer; font-size: 14px; }
@@ -420,12 +449,12 @@ select option { background: #14162a; color: var(--text); }
 .addapp-gh.warn { color: var(--warn); }
 
 /* ---- update / restart banner ---- */
-.update-bar { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); z-index: 95; display: flex; align-items: center; gap: 14px; padding: 9px 12px 9px 18px; background: linear-gradient(180deg, rgba(26,28,50,.98), rgba(14,15,28,.99)); border: 1px solid var(--neon); border-radius: 12px; box-shadow: 0 14px 44px rgba(0,0,0,.55); font-size: 13px; font-weight: 500; animation: toastIn .25s ease; }
+.update-bar { position: fixed; top: calc(16px + var(--sat)); left: 50%; transform: translateX(-50%); z-index: 95; display: flex; align-items: center; gap: 14px; padding: 9px 12px 9px 18px; background: linear-gradient(180deg, rgba(26,28,50,.98), rgba(14,15,28,.99)); border: 1px solid var(--neon); border-radius: 12px; box-shadow: 0 14px 44px rgba(0,0,0,.55); font-size: 13px; font-weight: 500; animation: toastIn .25s ease; }
 .update-x { background: rgba(255,255,255,.06); border: none; color: var(--muted); width: 26px; height: 26px; border-radius: 8px; cursor: pointer; font-size: 12px; }
 .update-x:hover { background: rgba(255,93,108,.2); color: var(--bad); }
 
 /* ---- in-app approval prompts ---- */
-.approval-dock { position: fixed; right: 20px; bottom: 20px; z-index: 90; display: flex; flex-direction: column; gap: 12px; width: min(380px, calc(100vw - 40px)); }
+.approval-dock { position: fixed; right: calc(20px + var(--sar)); bottom: calc(20px + var(--sab) + var(--kb)); z-index: 90; display: flex; flex-direction: column; gap: 12px; width: min(380px, calc(100vw - 40px - var(--sar) - var(--sal))); }
 .approval-toast { background: linear-gradient(180deg, rgba(24,26,46,.98), rgba(14,15,28,.99)); border: 1px solid rgba(255,194,75,.45); border-radius: 14px; box-shadow: 0 16px 44px rgba(0,0,0,.55); padding: 14px 15px; animation: toastIn .22s ease; }
 @keyframes toastIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
 .at-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
@@ -462,7 +491,8 @@ select option { background: #14162a; color: var(--text); }
 .btn.ghost:hover { background: rgba(124,92,255,.14); border-color: var(--neon); }
 
 /* ---- auth gate ---- */
-.auth-overlay { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; padding: 24px; background: radial-gradient(1200px 600px at 50% -10%, rgba(124,92,255,.18), transparent), rgba(4,5,12,.96); backdrop-filter: blur(8px); }
+.auth-overlay { position: fixed; inset: 0; z-index: 100; display: flex; align-items: flex-start; justify-content: center; overflow-y: auto; padding: calc(24px + var(--sat)) calc(24px + var(--sar)) calc(24px + var(--sab) + var(--kb)) calc(24px + var(--sal)); background: radial-gradient(1200px 600px at 50% -10%, rgba(124,92,255,.18), transparent), rgba(4,5,12,.96); backdrop-filter: blur(8px); }
+.auth-card, .build-card { margin: auto; }
 .auth-card { width: min(400px, 100%); background: linear-gradient(180deg, rgba(18,20,38,.96), rgba(10,11,22,.98)); border: 1px solid var(--glass-brd); border-radius: 18px; box-shadow: var(--shadow); padding: 30px 28px; }
 .auth-brand { font-size: 34px; text-align: center; }
 .auth-title { font-size: 20px; font-weight: 800; text-align: center; margin-top: 8px; }
@@ -481,7 +511,7 @@ select option { background: #14162a; color: var(--text); }
 .machine-select:focus { outline: none; border-color: var(--neon2); }
 
 /* ---- workbench (multi-session: rail + focused conversation) ---- */
-.bench-shell { display: flex; gap: 16px; height: calc(100vh - 132px); min-height: 520px; }
+.bench-shell { display: flex; gap: 16px; height: calc(100dvh - 132px - var(--kb)); min-height: 520px; }
 .bench-rail { width: 268px; flex-shrink: 0; display: flex; flex-direction: column; background: rgba(255,255,255,.025); border: 1px solid var(--glass-brd); border-radius: 14px; overflow: hidden; }
 .bench-rail-head { display: flex; align-items: center; justify-content: space-between; padding: 13px 14px; border-bottom: 1px solid var(--glass-brd); font-weight: 700; font-size: 14px; }
 .bench-newform { padding: 0 12px; }
@@ -520,10 +550,10 @@ select option { background: #14162a; color: var(--text); }
 .layout-btn.active { background: rgba(124,92,255,.2); color: #cbb8ff; }
 /* Split = two columns, Grid = tile every session; both scroll vertically and
    give each pane a bounded height so many sessions stay readable side by side. */
-.bench-main.layout-split, .bench-main.layout-grid { display: grid; gap: 14px; overflow-y: auto; align-content: start; padding-right: 2px; }
+.bench-main.layout-split, .bench-main.layout-grid { display: grid; gap: 14px; overflow-y: auto; overscroll-behavior: contain; align-content: start; padding-right: 2px; }
 .bench-main.layout-split { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.bench-main.layout-grid { grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); }
-.bench-main.layout-split .bench-pane, .bench-main.layout-grid .bench-pane { height: clamp(340px, 46vh, 560px); }
+.bench-main.layout-grid { grid-template-columns: repeat(auto-fill, minmax(min(380px, 100%), 1fr)); }
+.bench-main.layout-split .bench-pane, .bench-main.layout-grid .bench-pane { height: clamp(340px, 46dvh, 560px); }
 .bench-pane.is-active { border-color: rgba(124,92,255,.55); box-shadow: 0 0 0 1px rgba(124,92,255,.3); }
 .pane-max { width: 28px; height: 28px; background: rgba(255,255,255,.06); border: 1px solid var(--glass-brd); color: var(--muted); border-radius: 8px; cursor: pointer; font-size: 13px; line-height: 1; }
 .pane-max:hover { background: rgba(124,92,255,.14); border-color: var(--neon); color: var(--text); }
@@ -588,9 +618,6 @@ a { color: var(--neon2); text-decoration: none; }
 a:hover { text-decoration: underline; }
 .fade-in { animation: fadeIn .35s ease; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
-::-webkit-scrollbar { width: 9px; height: 9px; }
-::-webkit-scrollbar-thumb { background: rgba(124,92,255,0.25); border-radius: 10px; }
-::-webkit-scrollbar-track { background: transparent; }
 
 /* ---- Save / cost optimizer ------------------------------------------------ */
 .btn-soft { background: rgba(124,92,255,.16); color: #cdd6ff; }
@@ -642,3 +669,148 @@ a:hover { text-decoration: underline; }
 .qr-box { background: #fff; padding: 8px; border-radius: 12px; line-height: 0; flex-shrink: 0;
   box-shadow: 0 6px 18px rgba(0,0,0,.3); }
 .qr-box svg { display: block; width: 150px; height: 150px; }
+
+/* =========================================================================
+   iPad / touch. Everything below is gated on a coarse or hover-less pointer,
+   so a mouse-driven desktop computes identically to before this block existed.
+   ========================================================================= */
+
+/* ---- 5a: base touch hygiene ---- */
+html, body { -webkit-tap-highlight-color: transparent; overscroll-behavior: none; }
+
+/* An accidental pull-to-refresh in the standalone PWA reloads the app; a reload
+   aborts every open /api/query and server.js kills the claude child on
+   request-close, so it terminates real work. Stop scroll chaining everywhere. */
+.view, .project-nav, .chat-body, .bench-body,
+.bench-main.layout-split, .bench-main.layout-grid, .bench-rail-list,
+.addapp-body, .tc-out, .build-log, .heatmap { overscroll-behavior: contain; }
+
+button, a, select, input, textarea, label,
+.app-row, .rail-item, .session-row.clickable, .nav-item, .project-item,
+.mode-opt, .hm-cell, .vbar-col, .opt-chip, .tc-head, .billing-link {
+  touch-action: manipulation;
+}
+
+/* ---- 5b: custom scrollbars render as permanent 9px gutters on iPad; give
+   touch devices the native overlay scrollbars instead. ---- */
+@media (pointer: fine) {
+  ::-webkit-scrollbar { width: 9px; height: 9px; }
+  ::-webkit-scrollbar-thumb { background: rgba(124,92,255,0.25); border-radius: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+}
+
+/* ---- 5c: iOS keeps :hover applied after a tap. Only the geometry-moving
+   hovers and the nav tint (which competes with .active) are genuinely broken. ---- */
+@media (hover: none) {
+  .app-row:hover, .billing-link:hover,
+  .btn:hover, .btn.stop:hover, .btn-soft:hover, .btn-ghost:hover {
+    transform: none; box-shadow: none;
+  }
+  .hm-cell:hover { transform: none; outline: none; }
+  .nav-item:hover, .project-item:hover { background: transparent; color: var(--muted); }
+  /* re-assert: the line above is (0,2,0), the same specificity as .nav-item.active,
+     and it is later in source order — so .active must repeat to win the tie. */
+  .nav-item.active, .project-item.active {
+    background: linear-gradient(90deg, rgba(124,92,255,0.22), rgba(124,92,255,0.04));
+    color: #fff;
+    box-shadow: inset 2px 0 0 var(--neon), 0 0 18px rgba(124,92,255,0.18);
+  }
+
+  /* :hover gives no press confirmation on touch — :active does. */
+  .btn:active, .btn-soft:active, .btn-ghost:active, .mode-toggle:active,
+  .menu-btn:active, .layout-btn:active, .pane-max:active, .opt-chip:active,
+  .addapp-tab:active, .modal-x:active, .update-x:active { opacity: .72; transition: none; }
+  .nav-item:active, .project-item:active, .app-row:active, .rail-item:active,
+  .billing-link:active, .mode-opt:active, .session-row.clickable:active {
+    background: rgba(124,92,255,0.16); transition: none;
+  }
+  .rule .rm:active, .rail-x:active, .opt-dismiss:active, .owner-logout:active {
+    color: var(--bad); transition: none;
+  }
+  .hm-cell:active { outline: 1px solid var(--neon2); }
+  .vbar-col:active .vbar { filter: brightness(1.25); }
+}
+
+/* ---- 5e: 44x44pt minimum, and un-hide the hover-only delete buttons.
+   .rule .rm and .rail-x are opacity:0 revealed only by :hover — on iPad they
+   are permanently invisible, so allowlist rules, ledger entries, custom apps,
+   machines and Workbench sessions simply cannot be removed. ---- */
+@media (hover: none), (pointer: coarse) {
+  .rule .rm {
+    opacity: 1; font-size: 17px; flex-shrink: 0;
+    min-width: 44px; min-height: 44px; margin: -8px -8px -8px 0;
+    display: inline-flex; align-items: center; justify-content: center; border-radius: 8px;
+  }
+  /* the machines list puts Rename and Remove side by side; without this the
+     later button overlaps 8px of the first and eats taps near its right edge */
+  .rule .rm:not(:last-child) { margin-right: 0; }
+  .rail-x {
+    opacity: 1; font-size: 15px; padding: 0;
+    min-width: 44px; min-height: 44px; margin: -10px -6px -10px 0;
+    display: inline-flex; align-items: center; justify-content: center; border-radius: 10px;
+  }
+}
+
+@media (pointer: coarse) {
+  .menu-btn { width: 44px; height: 44px; font-size: 20px; }
+  .modal-x, .pane-max, .update-x {
+    min-width: 44px; min-height: 44px; width: 44px; height: 44px; flex-shrink: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .modal-x { font-size: 16px; } .pane-max { font-size: 15px; } .update-x { font-size: 14px; }
+  .layout-btn {
+    min-width: 44px; min-height: 40px; font-size: 16px;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  /* top:0/right:0, NOT 4/4 — .card has overflow:hidden and 18px 20px padding, so
+     a 44px flex-centred box at 0,0 lands within 2.5px of today's glyph centre. */
+  .opt-dismiss {
+    top: 0; right: 0; width: 44px; height: 44px; font-size: 17px; opacity: .85;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .mode-toggle { min-height: 44px; padding: 8px 16px; font-size: 13px; }
+  .owner-logout { min-height: 40px; padding: 8px 14px; font-size: 12px; }
+  .addapp-tab { min-height: 44px; }
+  /* min-height survives the inline padding overrides app.js applies */
+  .btn, .btn-soft, .btn-ghost { min-height: 44px; }
+  /* the enlarged header row must not blow out split/grid panes */
+  .bench-title { min-width: 0; }
+  .hm-cell, .hm-h { min-width: 22px; }
+}
+
+/* ---- 8d: tap-to-read readout for charts whose only payload was a title= ---- */
+.tap-readout { min-height: 17px; margin-top: 10px; font-size: 12px; color: var(--neon2);
+  opacity: 0; transition: opacity .12s; font-variant-numeric: tabular-nums; }
+.tap-readout.on { opacity: 1; }
+
+/* ---- 9c: iOS install guidance ---- */
+.ios-install { margin-top: 12px; display: flex; flex-direction: column; gap: 12px; }
+.ios-step { display: flex; gap: 10px; align-items: flex-start; font-size: 13px; line-height: 1.55; }
+.ios-num { flex-shrink: 0; width: 22px; height: 22px; border-radius: 50%; background: rgba(124,92,255,.2);
+  color: #cbb8ff; font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
+
+/* ---- 9b: soft-keyboard inset ---- */
+html.kb-open .view { padding-bottom: calc(84px + var(--kb) + var(--sab)); }
+@media (max-width: 820px) {
+  /* REQUIRED: the base .bench-shell rule edited in Phase 4 wins over the 820
+     block on source order once these blocks are appended. Restate it last. */
+  .bench-shell { height: auto; }
+}
+
+/* ---- 7b: iOS focus-zoom. Any control under 16px scales the layout viewport and
+   never scales back. any-pointer (not pointer) so it still applies on an iPad
+   with a Magic Keyboard trackpad attached. MUST STAY LAST IN THE FILE — media
+   queries add no specificity, so source order is what beats .machine-select
+   and textarea.q-input. ---- */
+@media (any-pointer: coarse) {
+  input[type=text], input[type=password],
+  input[type=email], input[type=number], input[type=date],
+  input[type=search], input[type=tel], input[type=url], input:not([type]),
+  textarea, textarea.q-input, select, .machine-select { font-size: 16px; }
+
+  input[type=text], input[type=password], input[type=email],
+  input[type=number], input[type=date], input:not([type]) { min-height: 46px; }
+  select, .machine-select { min-height: 44px; height: auto; padding: 11px 12px; }
+  textarea.q-input { min-height: 56px; }
+  input[type=checkbox] { width: 22px; height: 22px; flex-shrink: 0; accent-color: var(--neon); }
+}

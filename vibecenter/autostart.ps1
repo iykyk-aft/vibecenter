@@ -39,3 +39,36 @@ if (-not $bridgeUp -and (Test-Path $pairFile)) {
     Start-Process $node -ArgumentList "broker/connect.mjs $token" -WorkingDirectory $root -WindowStyle Hidden
   }
 }
+
+# 4) Tailnet-only HTTPS for the agent on 8443 — the iPad PWA path. HTTPS is
+# required: iOS Safari will not register /sw.js outside a secure context.
+# tailscaled restores this from its own ServeConfig on boot; we only re-assert
+# it if a `serve reset` or state wipe removed it.
+# NOTE: `serve` is tailnet-only. NEVER `funnel` 8443 — that would publish the agent.
+$ts = 'C:\Program Files\Tailscale\tailscale.exe'
+if (Test-Path $ts) {
+  $up = $false
+  for ($i = 0; $i -lt 20; $i++) {
+    & $ts status --json 1>$null 2>$null
+    if ($LASTEXITCODE -eq 0) { $up = $true; break }
+    Start-Sleep -Seconds 3
+  }
+  if ($up) {
+    $needServe = $true
+    try {
+      $j = (& $ts serve status --json 2>$null | Out-String)
+      if ($LASTEXITCODE -eq 0 -and $j.Trim()) {
+        $cfg = $j | ConvertFrom-Json
+        if ($cfg.TCP -and $cfg.TCP.PSObject.Properties.Name -contains '8443') { $needServe = $false }
+      }
+    } catch { $needServe = $true }
+    if ($needServe) {
+      & $ts serve --bg --https=8443 http://127.0.0.1:7878 1>$null 2>$null
+      if ($LASTEXITCODE -ne 0) {
+        Add-Content -Path (Join-Path $root 'data\autostart.log') -Value "$(Get-Date -Format s) tailscale serve --https=8443 failed (exit $LASTEXITCODE)"
+      }
+    }
+  } else {
+    Add-Content -Path (Join-Path $root 'data\autostart.log') -Value "$(Get-Date -Format s) tailscaled not ready; skipped serve 8443"
+  }
+}

@@ -1,16 +1,35 @@
 {
+  "id": "/",
   "name": "Vibe Center",
   "short_name": "Vibe Center",
   "description": "Mission control for Claude Code — metrics, live sessions, approvals, and queries from any device.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
+  "display_override": [
+    "standalone"
+  ],
   "orientation": "any",
   "background_color": "#07080f",
   "theme_color": "#7c5cff",
   "icons": [
-    { "src": "/assets/vibe-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "/assets/vibe-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
-    { "src": "/assets/vibe.png", "sizes": "256x256", "type": "image/png", "purpose": "maskable" }
+    {
+      "src": "/assets/vibe-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/assets/vibe-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/assets/vibe-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
   ]
 }

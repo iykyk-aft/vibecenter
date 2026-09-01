@@ -53,6 +53,37 @@ async function api(path, opts) {
 }
 
 // ---- SVG charts ------------------------------------------------------------
+// Charts read out values on hover (desktop) and on touch-scrub (iPad). iOS never
+// fires mousemove on a non-clickable div, so bind pointer events and capture the
+// pointer so a drag keeps tracking outside the box. touch-action: pan-y in CSS is
+// what actually permits/suppresses scrolling; the preventDefault below just
+// silences compat-mouse noise on Chrome/Android.
+function bindChartScrub(wrap, onMove, onLeave) {
+  let active = false, hideTimer = null;
+  const at = (e) => { clearTimeout(hideTimer); onMove(e.clientX); };
+  wrap.addEventListener('pointerdown', (e) => {
+    active = true;
+    try { wrap.setPointerCapture(e.pointerId); } catch { /* */ }
+    at(e);
+  });
+  wrap.addEventListener('pointermove', (e) => {
+    if (e.pointerType === 'mouse') { at(e); return; }
+    if (active) { e.preventDefault(); at(e); }
+  }, { passive: false });
+  const finish = (e, immediate) => {
+    if (!active) return;
+    active = false;
+    try { wrap.releasePointerCapture(e.pointerId); } catch { /* */ }
+    if (e.pointerType === 'mouse') return;      // mouse hides via pointerleave
+    clearTimeout(hideTimer);
+    if (immediate) onLeave();                   // scroll stole the gesture -> hide now
+    else hideTimer = setTimeout(onLeave, 2500); // deliberate lift -> leave it readable
+  };
+  wrap.addEventListener('pointerup', (e) => finish(e, false));
+  wrap.addEventListener('pointercancel', (e) => finish(e, true));
+  wrap.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') onLeave(); });
+}
+
 function areaChart(dailyMap, { height = 150, unit = 'tokens' } = {}) {
   const days = Object.keys(dailyMap).sort();
   if (days.length === 0) return el('div', { class: 'empty' }, 'No activity yet');
@@ -112,9 +143,9 @@ function areaChart(dailyMap, { height = 150, unit = 'tokens' } = {}) {
   const tip = el('div', { class: 'chart-tip' });
   cross.style.display = dot.style.display = tip.style.display = 'none';
   wrap.append(cross, dot, tip);
-  wrap.addEventListener('mousemove', (e) => {
+  bindChartScrub(wrap, (clientX) => {
     const rect = wrap.getBoundingClientRect();
-    const vbX = ((e.clientX - rect.left) / rect.width) * W;
+    const vbX = ((clientX - rect.left) / rect.width) * W;
     let i = Math.round((vbX - pad) / (stepX || 1));
     i = Math.max(0, Math.min(n - 1, i));
     const leftPx = (x(i) / W) * rect.width;
@@ -128,8 +159,7 @@ function areaChart(dailyMap, { height = 150, unit = 'tokens' } = {}) {
     const tw = 150;
     tip.style.left = Math.max(2, Math.min(rect.width - tw, leftPx - tw / 2)) + 'px';
     tip.style.top = Math.max(2, topPx - 38) + 'px';
-  });
-  wrap.addEventListener('mouseleave', () => { cross.style.display = dot.style.display = tip.style.display = 'none'; });
+  }, () => { cross.style.display = dot.style.display = tip.style.display = 'none'; });
 
   const labels = el('div', { style: 'display:flex;justify-content:space-between;font-size:10px;color:var(--dim);margin-top:6px;' },
     el('span', {}, slice[0]?.slice(5)), el('span', {}, slice[n - 1]?.slice(5)));
@@ -188,9 +218,9 @@ function burnUpChart(dailyCost, { metered = true, height = 180 } = {}) {
   const cross = wrap.lastChild; cross.style.display = 'none';
   const tip = el('div', { class: 'chart-tip' }); tip.style.display = 'none';
   wrap.append(tip);
-  wrap.addEventListener('mousemove', (e) => {
+  bindChartScrub(wrap, (clientX) => {
     const rect = wrap.getBoundingClientRect();
-    const vbX = ((e.clientX - rect.left) / rect.width) * W;
+    const vbX = ((clientX - rect.left) / rect.width) * W;
     let day = Math.round((vbX - pad) / stepX) + 1;
     day = Math.max(1, Math.min(daysInMonth, day));
     const isProj = day > today;
@@ -202,8 +232,7 @@ function burnUpChart(dailyCost, { metered = true, height = 180 } = {}) {
     const tw = 170;
     tip.style.left = Math.max(2, Math.min(rect.width - tw, leftPx - tw / 2)) + 'px';
     tip.style.top = '6px';
-  });
-  wrap.addEventListener('mouseleave', () => { cross.style.display = tip.style.display = 'none'; });
+  }, () => { cross.style.display = tip.style.display = 'none'; });
 
   const summary = el('div', { style: 'display:flex;gap:24px;flex-wrap:wrap;margin-top:12px' },
     el('div', {}, el('div', { class: 'kpi-value pink', style: 'font-size:26px' }, pre + fmtCost(mtd)),
@@ -277,9 +306,9 @@ function stackedAreaChart(modelDaily, { height = 170, labelOf = (m) => m } = {})
   const tip = el('div', { class: 'chart-tip' });
   cross.style.display = tip.style.display = 'none';
   wrap.append(cross, tip);
-  wrap.addEventListener('mousemove', (e) => {
+  bindChartScrub(wrap, (clientX) => {
     const rect = wrap.getBoundingClientRect();
-    const vbX = ((e.clientX - rect.left) / rect.width) * W;
+    const vbX = ((clientX - rect.left) / rect.width) * W;
     let i = Math.round((vbX - pad) / (stepX || 1));
     i = Math.max(0, Math.min(n - 1, i));
     const leftPx = (x(i) / W) * rect.width;
@@ -292,8 +321,7 @@ function stackedAreaChart(modelDaily, { height = 170, labelOf = (m) => m } = {})
     const tw = 190;
     tip.style.left = Math.max(2, Math.min(rect.width - tw, leftPx - tw / 2)) + 'px';
     tip.style.top = '6px';
-  });
-  wrap.addEventListener('mouseleave', () => { cross.style.display = tip.style.display = 'none'; });
+  }, () => { cross.style.display = tip.style.display = 'none'; });
   wrap.append(el('div', { style: 'display:flex;justify-content:space-between;font-size:10px;color:var(--dim);margin-top:6px;' },
     el('span', {}, days[0].slice(5)), el('span', {}, days[n - 1].slice(5))));
 
@@ -608,12 +636,16 @@ async function runAppQuery(projectId, prompt, out, btn) {
 function vbars(values, labels) {
   const max = Math.max(...values, 1);
   const wrap = el('div', { class: 'vbars' });
+  const read = tapReadout();
   values.forEach((v, i) => {
-    wrap.append(el('div', { class: 'vbar-col', title: `${labels[i] ?? i}: ${fmtNum(v)}` },
+    const label = `${labels[i] ?? i}: ${fmtNum(v)}`;
+    const col = el('div', { class: 'vbar-col', title: label, 'aria-label': label },
       el('div', { class: 'vbar', style: `height:${Math.max(2, (v / max) * 100)}%` }),
-      el('div', { class: 'vbar-lab' }, labels[i] ?? '')));
+      el('div', { class: 'vbar-lab' }, labels[i] ?? ''));
+    col.addEventListener('pointerdown', () => read.show(label));
+    wrap.append(col);
   });
-  return wrap;
+  return el('div', {}, wrap, read);
 }
 function hbars(items) {
   const max = Math.max(...items.map((i) => i.value), 1);
@@ -693,6 +725,18 @@ function gaugeRow(label, used, budget, fallbackPeak) {
     el('div', { class: 'gauge' }, el('span', { class: 'gauge-fill', style: `width:${pct}%` })));
 }
 
+// A one-line readout under a chart: on touch there is no hover, so a tap prints
+// the value here instead of into a title= the OS will never show. Kept visible
+// (opacity, not display) on every device — an iPad with a trackpad reports
+// hover:hover + pointer:fine yet WebKit still declines to paint title tooltips.
+function tapReadout() {
+  const r = el('div', { class: 'tap-readout', 'aria-live': 'polite' }, '');
+  r.show = (t) => {
+    r.textContent = t; r.classList.add('on');
+    clearTimeout(r._t); r._t = setTimeout(() => r.classList.remove('on'), 3500);
+  };
+  return r;
+}
 function heatColor(t) {
   if (t <= 0) return 'rgba(255,255,255,.04)';
   return `rgba(124,92,255,${(0.14 + t * 0.86).toFixed(2)})`;
@@ -701,6 +745,7 @@ function heatmapEl(matrix) {
   const max = Math.max(1, ...matrix.flat());
   const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const wrap = el('div', { class: 'heatmap' });
+  const read = tapReadout();
   const axis = el('div', { class: 'hm-row hm-axis' }, el('div', { class: 'hm-day' }, ''));
   for (let h = 0; h < 24; h++) axis.append(el('div', { class: 'hm-h' }, h % 3 === 0 ? String(h) : ''));
   wrap.append(axis);
@@ -708,11 +753,20 @@ function heatmapEl(matrix) {
     const row = el('div', { class: 'hm-row' }, el('div', { class: 'hm-day' }, days[d]));
     for (let h = 0; h < 24; h++) {
       const v = matrix[d][h];
-      row.append(el('div', { class: 'hm-cell', title: `${days[d]} ${h}:00 — ${fmtNum(v)} tok`, style: `background:${heatColor(v / max)}` }));
+      const label = `${days[d]} ${h}:00 — ${fmtNum(v)} tok`;
+      const cell = el('div', { class: 'hm-cell', title: label, 'aria-label': label,
+        style: `background:${heatColor(v / max)}` });
+      cell._lab = label;
+      row.append(cell);
     }
     wrap.append(row);
   }
-  return wrap;
+  // one delegated listener, not 168 — iOS never paints title= tooltips
+  wrap.addEventListener('pointerdown', (e) => {
+    const c = e.target.closest('.hm-cell');
+    if (c && c._lab) read.show(c._lab);
+  });
+  return el('div', {}, wrap, read);
 }
 function compositionBar(c) {
   const parts = [
@@ -1161,6 +1215,12 @@ async function runAction(a, btn) {
 }
 
 // ---- session chat modal --------------------------------------------------
+// Only auto-follow when the reader is already at the bottom, and use scrollTo so
+// it doesn't fight an iOS momentum flick.
+function stickToBottom(elm, threshold = 80) {
+  if (elm.scrollHeight - elm.scrollTop - elm.clientHeight >= threshold) return;
+  elm.scrollTo({ top: elm.scrollHeight, behavior: 'auto' });
+}
 function chatBubble(m) {
   const wrap = el('div', { class: 'chat-msg ' + (m.role === 'user' ? 'cb-user' : 'cb-assistant') });
   if (m.text) wrap.append(el('div', { class: 'cb-text' }, m.text));
@@ -1384,7 +1444,7 @@ async function streamContinue(projectId, sessionId, prompt, stream, status, body
         else if (ev.type === 'text') { addText(ev.text); st('running'); }
         else if (ev.type === 'stderr') { /* surfaced via the tool result/output */ }
         else if (ev.type === 'done') { status.textContent = ev.error ? '✕ failed' : `✓ done${ev.cost != null ? ` · API-equiv $${ev.cost.toFixed(4)}` : ''}`; st(ev.error ? 'error' : 'done'); }
-        body.scrollTop = body.scrollHeight;
+        stickToBottom(body);
       }
     }
   } catch (e) {
@@ -1480,6 +1540,9 @@ function buildBenchSession(project, write, saved) {
   // how you pick the "active" session — update it cheaply (no re-render, which
   // would steal focus) and just repaint the rail + pane highlights.
   ta.addEventListener('focus', () => {
+    // .bench-pane is overflow:hidden, so this walks up to .view (the real
+    // scrollport); 'nearest' is a no-op on desktop where it's already visible.
+    try { ta.scrollIntoView({ block: 'nearest' }); } catch { /* */ }
     const b = state.bench;
     if (!b || b.activeId === sess.id) return;
     b.activeId = sess.id; sess.unread = false;
@@ -1507,7 +1570,7 @@ function buildBenchSession(project, write, saved) {
     el('div', { class: 'bench-head' },
       el('span', { class: 'bench-title', title: project.cwd || project.name }, project.name),
       el('div', { style: 'display:flex;gap:8px;align-items:center' }, toggle, apprBtn, maxBtn,
-        el('button', { class: 'modal-x', style: 'width:28px;height:28px', title: 'End session', onclick: () => closeBenchSession(sess.id) }, '✕'))),
+        el('button', { class: 'modal-x', title: 'End session', onclick: () => closeBenchSession(sess.id) }, '✕'))),
     body,
     el('div', { class: 'bench-input' }, el('div', { class: 'q-bar' }, ta, stopBtn, btn)));
   sess.paneEl = pane; sess.bodyEl = body; sess.taEl = ta;
@@ -1570,6 +1633,7 @@ function endRun(sess) {
   }
 }
 function closeBenchSession(id) {
+  if (!confirm('End this session? Its transcript will be closed.')) return;
   const b = ensureBench();
   const i = b.sessions.findIndex((s) => s.id === id);
   if (i === -1) return;
@@ -1633,10 +1697,10 @@ function refreshRail() {
 const benchSessionCache = {};
 function newSessionForm() {
   const local = ((state.overview && state.overview.projects) || []).filter((p) => p.cwd);
-  const picker = el('select', { class: 'q-input', style: 'height:38px' },
+  const picker = el('select', { class: 'q-input' },
     el('option', { value: '' }, '— pick an application —'),
     ...local.map((p) => el('option', { value: p.id }, p.name)));
-  const sessPicker = el('select', { class: 'q-input', style: 'height:38px;margin-top:10px;display:none' });
+  const sessPicker = el('select', { class: 'q-input', style: 'margin-top:10px;display:none' });
   const writeChk = el('input', { type: 'checkbox', checked: 'checked' });
 
   function fillSessions(list) {
@@ -2177,7 +2241,7 @@ function scaffoldCard(gh) {
       el('label', { style: 'margin-top:12px;display:flex;gap:8px;align-items:center;font-weight:400' },
         repoCheck, 'Create a GitHub repo'),
       el('label', { style: 'margin-top:10px' }, 'Visibility'),
-      el('select', { id: 'scfVis', class: 'q-input', style: 'height:38px' },
+      el('select', { id: 'scfVis', class: 'q-input' },
         el('option', { value: 'private' }, 'Private'),
         el('option', { value: 'public' }, 'Public')),
       el('button', { class: 'btn', style: 'margin-top:14px', onclick: () => createProject() }, '✨ Create & open session')),
@@ -2219,8 +2283,8 @@ async function inviteCard() {
   render(data.invites || []);
   const base = reachableUrl() || location.origin;       // where invitees sign up
   const connectBase = brokerBaseUrl() || '<broker-url>'; // where their machine bridges
-  const isPublic = !!state.publicUrl || !isLoopbackHost(location.hostname);
-  const share = el('textarea', { class: 'q-input', rows: '11', readonly: 'readonly', style: 'width:100%;display:none;font-size:12px;margin-top:12px' });
+  const isPublic = !!state.publicUrl || (!isLoopbackHost(location.hostname) && !isTailnetHost(location.hostname));
+  const share = el('textarea', { class: 'q-input', rows: '11', readonly: 'readonly', style: 'width:100%;display:none;margin-top:12px' });
   const msg = el('div', { style: 'font-size:12.5px;margin-top:10px;color:var(--good)' });
   const inviteText = (code) =>
 `🎟️ You're invited to Vibe Center
@@ -2263,8 +2327,41 @@ Your data and Claude stay on your computer — Vibe Center just shows your dashb
 }
 
 function isStandalone() { return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true; }
+// iPadOS 13+ reports as "Macintosh" — maxTouchPoints is the only reliable tell.
+function iosInfo() {
+  const ua = navigator.userAgent;
+  const isIOS = /iPad|iPhone|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+  const iPad = /iPad/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+  // CriOS/FxiOS/EdgiOS/OPiOS ship distinct tokens; Brave on iOS ships a stock
+  // Safari UA and can never be detected, so don't pretend to.
+  const isSafari = isIOS && !/CriOS|FxiOS|EdgiOS|OPiOS|DuckDuckGo|Yandex/.test(ua);
+  return { isIOS, iPad, isSafari };
+}
 function installButton() {
   if (isStandalone()) return el('div', { class: 'guide-installed' }, '✓ Installed — you’re running the app.');
+  const ios = iosInfo();
+  if (ios.isIOS) {
+    // beforeinstallprompt does not exist in WebKit; the real path is the Share sheet.
+    const step = (n, ...kids) => el('div', { class: 'ios-step' },
+      el('span', { class: 'ios-num' }, String(n)), el('div', {}, ...kids));
+    const wrap = el('div', { class: 'ios-install' });
+    if (!ios.isSafari) {
+      wrap.append(el('div', { class: 'lan-warn' },
+        '⚠ For the best result open this page in ', el('b', {}, 'Safari'),
+        '. Other iOS browsers can add it too (iOS 16.4+), but the menu wording differs.'));
+    }
+    wrap.append(
+      step(1, 'Tap the ', el('b', {}, 'Share'), ' button (the square with an arrow).',
+        el('div', { class: 'q-hint' }, ios.iPad
+          ? 'On iPad it\'s in the top toolbar, just right of the address bar.'
+          : 'On iPhone it\'s in the bottom toolbar.')),
+      step(2, 'Scroll the sheet and tap ', el('b', {}, 'Add to Home Screen'), '.',
+        el('div', { class: 'q-hint' }, 'Not listed? Tap "Edit Actions…" at the bottom of the share sheet and switch it on.')),
+      step(3, 'Tap ', el('b', {}, 'Add'), ', then open it from the new icon.',
+        el('div', { class: 'q-hint' }, 'It runs full-screen with no Safari chrome. iOS gives an installed web app its own cookie storage, so you sign in once more — that\'s normal.')),
+      step(4, 'Changed the icon since last time? Delete the Home Screen tile and re-add it — iOS caches it forever.'));
+    return wrap;
+  }
   const btn = el('button', { class: 'btn', style: 'margin-top:12px' }, '📲 Install app');
   btn.onclick = async () => {
     if (deferredInstallPrompt) {
@@ -2342,13 +2439,15 @@ function renderGuide() {
 
     (() => {
       const card = el('div', { class: 'card fade-in guide-card' },
-        el('div', { class: 'card-title' }, '📱  Install on your phone'),
-        el('p', { class: 'guide-intro' }, 'Use it like a native app. Open this address on your phone (same Wi-Fi), or scan the code:'),
-        deviceUrlBlock(),
+        el('div', { class: 'card-title' }, '📱  Install on your iPad or phone'),
+        el('p', { class: 'guide-intro' }, 'Use it like a native app. Open this address on the device, or scan the code:'),
+        // the QR is useless on the device you are already holding
+        deviceUrlBlock({ withQr: !iosInfo().isIOS }),
         el('ol', { class: 'guide-steps' },
-          el('li', {}, el('b', {}, 'iPhone (Safari):'), ' Share → Add to Home Screen.'),
-          el('li', {}, el('b', {}, 'Android (Chrome):'), ' menu → Install app, or tap below.'),
-          el('li', {}, 'It launches full-screen — approvals and metrics in your pocket.')));
+          el('li', {}, el('b', {}, 'iPad / iPhone (Safari):'), ' Share → Add to Home Screen. Follow the steps below.'),
+          el('li', {}, el('b', {}, 'Android (Chrome):'), ' menu → Install app, or tap the button below.'),
+          el('li', {}, 'Over Tailscale, use ', el('code', { class: 'guide-code' }, 'https://desktop-av0ghhf.tail26ff04.ts.net:8443'),
+            ' — HTTPS is required for offline mode, and the device needs the Tailscale toggle ON.')));
       card.append(installButton());
       return card;
     })(),
@@ -2441,6 +2540,7 @@ async function addCustomApp() {
   renderSettings();
 }
 async function removeCustomApp(id) {
+  if (!confirm('Remove this application from Vibe Center?')) return;
   await api('/api/apps', { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: 'remove', id }) });
   await refresh();
@@ -2595,6 +2695,9 @@ async function apiFor(path, agentId, opts) {
 }
 
 const isLoopbackHost = (h) => h === 'localhost' || h === '::1' || /^127\./.test(h) || /^\[?::1\]?$/.test(h);
+// A *.ts.net origin is reachable only by this tailnet's own devices — private,
+// even though it is neither loopback nor an RFC1918 address.
+const isTailnetHost = (h) => /\.ts\.net$/i.test(h || '');
 // A URL OTHER devices can open to reach this dashboard. Order: the address you're
 // already on (if it isn't loopback) → a configured broker URL → this machine's
 // LAN URL. null when nothing reachable is available yet.
@@ -2612,7 +2715,14 @@ function brokerBaseUrl() {
 
 function copyableUrl(url) {
   const copyBtn = el('button', { class: 'btn ghost', style: 'flex-shrink:0;padding:7px 13px', onclick: async () => {
-    try { await navigator.clipboard.writeText(url); copyBtn.textContent = '✓ Copied'; setTimeout(() => (copyBtn.textContent = '📋 Copy'), 1500); } catch { /* */ }
+    // navigator.clipboard is undefined on any non-secure origin (plain-HTTP LAN).
+    try { await navigator.clipboard.writeText(url); copyBtn.textContent = '✓ Copied'; }
+    catch {
+      const t = el('textarea', {}); t.value = url; document.body.append(t); t.select();
+      try { document.execCommand('copy'); copyBtn.textContent = '✓ Copied'; } catch { /* */ }
+      t.remove();
+    }
+    setTimeout(() => (copyBtn.textContent = '📋 Copy'), 1500);
   } }, '📋 Copy');
   return el('div', { style: 'display:flex;gap:10px;align-items:center;flex-wrap:wrap' },
     el('a', { class: 'broker-url', href: url, target: '_blank', rel: 'noopener' }, url), copyBtn);
@@ -2643,7 +2753,7 @@ function deviceUrlBlock({ withQr = true } = {}) {
 function brokerUrlCard() {
   const url = reachableUrl();
   if (!url) return null;
-  const viaBroker = !!state.publicUrl || !isLoopbackHost(location.hostname);
+  const viaBroker = !!state.publicUrl || (!isLoopbackHost(location.hostname) && !isTailnetHost(location.hostname));
   const q = qrCard(url);
   return el('div', { class: 'card fade-in', style: 'margin-bottom:16px' },
     el('div', { class: 'card-title' }, viaBroker ? '🛰️ Broker URL' : '🌐 Reach on your network',
@@ -2896,18 +3006,34 @@ function showUpdateBanner() {
 async function applyUpdate(btn) { return restartAndReload(btn); }
 // Ask the agent to restart, then reload into the fresh server once it's back. If
 // restart isn't available (e.g. via the broker), a plain reload picks up web changes.
+// Cache-first assets must be dropped before we reload into a new build.
+// NOTE: do NOT use navigator.serviceWorker.ready here — on an insecure origin
+// (LAN http://192.168.x.x:7878) 'serviceWorker' in navigator is still true but
+// `ready` never settles, which would hang the reload forever.
+async function purgeShellCache() {
+  try {
+    if (!('caches' in window)) return;
+    const keys = await caches.keys();
+    await Promise.all(keys.map((k) => caches.delete(k)));
+    if ('serviceWorker' in navigator) {
+      const reg = await navigator.serviceWorker.getRegistration();
+      if (reg) { try { await reg.update(); } catch { /* offline */ } }
+    }
+  } catch { /* nothing cached — reload as normal */ }
+}
+
 async function restartAndReload(btn) {
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Restarting…'; }
   let restarting = false;
   try { const r = await api('/api/restart', { method: 'POST' }); restarting = !!(r && r.ok); } catch { /* */ }
-  if (!restarting) { location.reload(); return; }
+  if (!restarting) { await purgeShellCache(); location.reload(); return; }
   const started = Date.now();
   const poll = async () => {
     try {
       const h = await (await fetch('/api/health')).json();
-      if (h && h.ok) { location.reload(); return; }
+      if (h && h.ok) { await purgeShellCache(); location.reload(); return; }
     } catch { /* still down */ }
-    if (Date.now() - started > 30000) { location.reload(); return; }
+    if (Date.now() - started > 30000) { await purgeShellCache(); location.reload(); return; }
     setTimeout(poll, 800);
   };
   setTimeout(poll, 1200);
@@ -2995,7 +3121,9 @@ function renderAuthGate(status, mode) {
     btn, msg, toggle);
   const overlay = el('div', { class: 'auth-overlay', id: 'authGate' }, card);
   document.body.append(overlay);
-  email.focus();
+  // iOS ignores programmatic focus outside a user gesture: no keyboard appears
+  // and the empty focus ring just looks broken.
+  if (!window.matchMedia('(pointer: coarse)').matches) email.focus();
   async function submit() {
     if (!email.value.trim() || !pass.value) { msg.textContent = 'Enter your email and password.'; return; }
     btn.disabled = true; btn.textContent = '…';
@@ -3108,4 +3236,30 @@ document.addEventListener('keydown', (e) => {
     toggleMaxBench(state.bench.maximizedId);
   }
 });
+// iOS/iPadOS keeps position:fixed pinned to the LAYOUT viewport and never
+// shrinks it for the soft keyboard, so the approval dock / bench composer /
+// login card end up behind it. Publish the keyboard height as --kb.
+(function keyboardInset() {
+  const vv = window.visualViewport;
+  if (!vv) return;
+  const root = document.documentElement;
+  const apply = () => {
+    // Pinch-zoom shrinks the visual viewport too (desktop trackpad and iOS);
+    // that is not a keyboard, so don't shove the UI around. <24px is a
+    // scrollbar/rounding delta, not a keyboard either.
+    let kb = vv.scale > 1.01 ? 0 : Math.round(window.innerHeight - vv.height - vv.offsetTop);
+    if (!(kb > 24)) kb = 0;
+    root.style.setProperty('--kb', kb + 'px');
+    root.classList.toggle('kb-open', kb > 80);
+  };
+  vv.addEventListener('resize', apply);
+  vv.addEventListener('scroll', apply);
+  window.addEventListener('orientationchange', () => setTimeout(apply, 250));
+  apply();
+})();
+
+// WebKit only applies :active to non-button elements when the document has a
+// touch listener. One no-op listener buys press feedback on every div control.
+document.addEventListener('touchstart', () => {}, { passive: true });
+
 boot();

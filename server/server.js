@@ -95,12 +95,33 @@ function parseCookies(req) {
   }
   return out;
 }
-function currentUser(req) { return userForToken(parseCookies(req)['cc_session']); }
-function setSessionCookie(res, token) {
-  res.setHeader('Set-Cookie', `cc_session=${token}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${30 * 24 * 3600}`);
+// The broker owns `cc_session` on the shared tailnet hostname (Funnel :443).
+// Cookies are keyed by host+path only — NEVER by port — so on that hostname this
+// agent must neither read nor delete the broker's cookie. On loopback/LAN hosts
+// there is no broker, so the legacy cookie is safely ours (pre-rename logins).
+const SESSION_COOKIE = 'cc_agent';
+const LEGACY_COOKIE = 'cc_session';
+function ownsLegacyCookie(req) {
+  // :\d+$ not split(':') — the IPv6 Host "[::1]:7878" must normalise to "[::1]".
+  const h = String((req && req.headers && req.headers.host) || '').toLowerCase().replace(/:\d+$/, '');
+  return LOOPBACK_HOSTS.includes(h) || isPrivateIPv4(h);
 }
-function clearSessionCookie(res) {
-  res.setHeader('Set-Cookie', 'cc_session=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0');
+function sessionToken(req) {
+  const c = parseCookies(req);
+  return c[SESSION_COOKIE] || (ownsLegacyCookie(req) ? c[LEGACY_COOKIE] : undefined);
+}
+function currentUser(req) { return userForToken(sessionToken(req)); }
+function setSessionCookie(res, token, req) {
+  // Secure only over real TLS (the serve hop sets x-forwarded-proto: https).
+  // Unconditional Secure would break plain-HTTP LAN logins on http://<ip>:7878.
+  const https = String((req && req.headers && req.headers['x-forwarded-proto']) || '').toLowerCase() === 'https'
+    || !!(req && req.socket && req.socket.encrypted);
+  res.setHeader('Set-Cookie', `${SESSION_COOKIE}=${token}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${30 * 24 * 3600}${https ? '; Secure' : ''}`);
+}
+function clearSessionCookie(res, req) {
+  const jar = [`${SESSION_COOKIE}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0`];
+  if (ownsLegacyCookie(req)) jar.push(`${LEGACY_COOKIE}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0`);
+  res.setHeader('Set-Cookie', jar);
 }
 // Endpoints reachable without a session: auth itself, health, and the local
 // gateway hook (loopback-only, has no user session of its own).
@@ -108,8 +129,14 @@ function clearSessionCookie(res) {
 // has no login of its own — but the hook is always LOCAL. Only loopback
 // sockets (or the internal token, for the broker bridge path) may use them.
 const LOOPBACK_ADDRS = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+// A loopback socket can no longer prove "same machine": any reverse proxy in
+// front of us (`tailscale serve`, caddy, cloudflared, ssh -L) makes every remote
+// caller arrive on 127.0.0.1. These two endpoints are AUTH_EXEMPT — they have no
+// session to check — so they must be gated on a secret the caller had to read
+// off this machine's disk. Loopback is kept as defence in depth, not credential.
 const localCallerOk = (req) =>
-  LOOPBACK_ADDRS.has(req.socket.remoteAddress) || req.headers['x-cc-internal'] === INTERNAL_TOKEN;
+  req.headers['x-cc-internal'] === INTERNAL_TOKEN
+  && LOOPBACK_ADDRS.has(req.socket.remoteAddress);
 const AUTH_EXEMPT = new Set([
   '/api/auth/status', '/api/auth/login', '/api/auth/register', '/api/auth/logout',
   '/api/health', '/api/approval-request', '/api/approval-poll',
@@ -462,7 +489,7 @@ async function handleApi(req, res, pathname) {
     const user = currentUser(req);
     // Keep the browser cookie's Max-Age in step with the sliding server-side
     // session renewal, so an actively-used login never hard-expires at day 30.
-    if (user) { const tok = parseCookies(req)['cc_session']; if (tok) setSessionCookie(res, tok); }
+    if (user) { const tok = sessionToken(req); if (tok) setSessionCookie(res, tok, req); }
     return sendJson(res, 200, {
       hasUsers: hasUsers(), user,
       publicUrl: readConfig().publicUrl || null,
@@ -473,7 +500,7 @@ async function handleApi(req, res, pathname) {
     const body = await readBody(req);
     const r = registerUser(body.email, body.password, body.invite); // first owner free; others need an invite
     if (!r.ok) return sendJson(res, 400, r);
-    setSessionCookie(res, createSession(r.user.id));
+    setSessionCookie(res, createSession(r.user.id), req);
     return sendJson(res, 200, { ok: true, user: r.user });
   }
   // mint / list invite codes (signed-in users only — gated by the block below)
@@ -485,12 +512,12 @@ async function handleApi(req, res, pathname) {
     const body = await readBody(req);
     const u = verifyLogin(body.email, body.password);
     if (!u) return sendJson(res, 401, { error: 'Wrong email or password.' });
-    setSessionCookie(res, createSession(u.id));
+    setSessionCookie(res, createSession(u.id), req);
     return sendJson(res, 200, { ok: true, user: u });
   }
   if (pathname === '/api/auth/logout' && req.method === 'POST') {
-    destroySession(parseCookies(req)['cc_session']);
-    clearSessionCookie(res);
+    destroySession(sessionToken(req));
+    clearSessionCookie(res, req);
     return sendJson(res, 200, { ok: true });
   }
 
@@ -1002,11 +1029,23 @@ function serveStatic(req, res, pathname) {
 // Local tools (curl, the hook) send no Origin and are allowed.
 const ALLOWED_HOSTS = new Set([`localhost:${PORT}`, `127.0.0.1:${PORT}`, `[::1]:${PORT}`]);
 const LOOPBACK_HOSTS = ['localhost', '127.0.0.1', '[::1]', '::1'];
+// Exact-match allowlist for a Tailscale `serve` front end (tailnet-only HTTPS,
+// TLS terminated by tailscaled on this machine). `tailscale serve` forwards the
+// browser's original Host verbatim — e.g. "desktop-xxx.tailnet.ts.net:8443" —
+// which hostOk()'s numeric-IP regex can never match. EXACT strings only, never a
+// suffix/wildcard, so DNS-rebinding from any other name is still blocked.
+// data/config.json:  "tailnetHosts": ["desktop-av0ghhf.tail26ff04.ts.net:8443"]
+const TAILNET_HOSTS = new Set(
+  (readConfig().tailnetHosts || []).map((h) => String(h).trim().toLowerCase()).filter(Boolean)
+);
 // With LAN access on we additionally accept our own private-network address on
 // the right port — that's the whole point (serving same-Wi-Fi devices) — but
 // nothing else, so DNS-rebinding from a public name is still blocked.
 function hostOk(host) {
   if (ALLOWED_HOSTS.has(host)) return true;
+  // Above the LAN_ACCESS gate on purpose: `tailscale serve` dials 127.0.0.1, so
+  // the iPad path must keep working if the owner turns LAN access off.
+  if (TAILNET_HOSTS.has(host)) return true;
   if (!LAN_ACCESS) return false;
   const m = host.match(/^([0-9.]+):(\d+)$/);
   return !!m && m[2] === String(PORT) && isPrivateIPv4(m[1]);
@@ -1018,6 +1057,11 @@ function securityReject(req) {
   if (origin) {
     let o;
     try { o = new URL(origin); } catch { return 'origin'; }
+    // Behind `tailscale serve` the browser's Origin is https://<name>:8443 —
+    // never our own PORT — so it must be matched before the port check below.
+    // Requiring o.host to be the Host we just validated is the tightest possible
+    // same-origin test (URL.host carries the port only when non-default).
+    if (o.protocol === 'https:' && TAILNET_HOSTS.has(o.host.toLowerCase())) return null;
     const okHost = LOOPBACK_HOSTS.includes(o.hostname) || (LAN_ACCESS && isPrivateIPv4(o.hostname));
     if (!okHost || o.port !== String(PORT)) return 'origin';
   }
