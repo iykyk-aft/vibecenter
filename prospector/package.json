@@ -1,0 +1,18 @@
+{
+  "name": "denver-prospector",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Find Denver small businesses with sub-par websites, score them, and draft outreach.",
+  "type": "module",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\"",
+    "discover": "node src/cli.mjs discover",
+    "audit": "node src/cli.mjs audit",
+    "deep": "node src/cli.mjs deep",
+    "report": "node src/cli.mjs report"
+  },
+  "dependencies": {
+    "playwright-core": "^1.56.0"
+  }
+}

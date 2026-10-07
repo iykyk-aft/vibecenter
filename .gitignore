@@ -8,3 +8,6 @@ vibecenter/bridge-run.sh
 
 # per-machine Claude Code settings (absolute paths, permissions) — never sync
 .claude/settings.local.json
+
+# prospector: scraped business/contact data, screenshots, email drafts — never sync
+prospector/out/
